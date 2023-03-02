@@ -1,0 +1,12 @@
+rule CC
+    command =  g++ ${in} -o ${out} ${flags}
+
+build server: CC server.cc
+
+build client: CC tcp_client.cc
+    flags = -lpthread -g
+
+build fair_recv: CC fair_recv.cc
+    flags  = -lpthread
+
+build starvation: CC starvation.cc
