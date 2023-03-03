@@ -53,15 +53,13 @@ int main(int argc, char *argv[]) {
   tcp_header.seq = rand() % 65535;
   tcp_header.ack_seq = 0;
   tcp_header.res1 = 0;
-  tcp_header.doff = 5;
+  tcp_header.doff = sizeof(struct tcphdr) / 4;
   tcp_header.fin = 0;
   tcp_header.syn = 1;
   tcp_header.rst = 0;
   tcp_header.psh = 0;
   tcp_header.ack = 0;
   tcp_header.urg = 0;
-  tcp_header.ece = 0;
-  tcp_header.cwr = 0;
   tcp_header.window = htons(1024);
   tcp_header.check = 0;
   tcp_header.urg_ptr = 0;
@@ -85,7 +83,7 @@ int main(int argc, char *argv[]) {
     memcpy(&sum, &ip_header.saddr, sizeof(ip_header.saddr));
     memcpy(&sum + sizeof(ip_header.saddr), &ip_header.daddr,
            sizeof(ip_header.daddr));
-    sum += htons(IPPROTO_TCP + ntohs(tcp_header.len));
+    sum += htons(IPPROTO_TCP + ntohs(sizeof(tcp_header)));
     tcp_header.check = htons(~(sum & 0xFFFF));
 
     // 发送 SYN 报文

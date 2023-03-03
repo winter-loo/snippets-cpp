@@ -2,3 +2,6 @@ a.out
 build/
 dlopen_protobuf/
 .vscode/
+.clang-format
+.ninja_log
+.ninja_deps
