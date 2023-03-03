@@ -1,0 +1,12 @@
+rule CC
+    command =  clang-format -i ${in} && g++ ${in} -o ${out} -g ${flags}
+
+build syn_sent: CC syn_sent.cc
+build send: CC send.cc
+build rtt_test: CC rtt_test.cc
+build udp_client: CC udp_client.cc
+build udp_server: CC udp_server.cc
+
+build server: CC server.cc
+
+build raw_socket: CC raw_socket.cc
