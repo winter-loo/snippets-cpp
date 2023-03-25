@@ -9,4 +9,4 @@ build udp_server: CC udp_server.cc
 
 build server: CC server.cc
 
-build raw_socket: CC raw_socket.cc
+build syn_flood: CC syn_flood.cc
