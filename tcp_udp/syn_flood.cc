@@ -124,15 +124,15 @@ int main(int argc, char *argv[]) {
   srand(time(NULL));  // 设置随机种子
 
   for (int i = 0; i < num_packets; i++) {
-    ip_header.id = htons(rand() % 65535);  // 设置随机标识符
+    ip_header.id = htons(rand() % 65535);       // 设置随机标识符
     tcp_header.source = htons(rand() % 65535);  // 设置随机源端口号
     tcp_header.seq = rand() % 65535;            // 设置随机序列号
 
     // generate random source ip
-    // ip_header.saddr = rand();
-    // ip_header.check = 0;
-    // ip_header.check =
-    //     calc_checksum((unsigned short *)&ip_header, sizeof(struct iphdr));
+    ip_header.saddr = rand();
+    ip_header.check = 0;
+    ip_header.check =
+        calc_checksum((unsigned short *)&ip_header, sizeof(struct iphdr));
 
     // 计算校验和
     tcp_header.check = tcp_checksum(&ip_header, &tcp_header, 0);
