@@ -200,9 +200,12 @@ int main(int argc, char** argv) {
 
       if (flags & EPOLLIN) {  // readable
         ReadFrom(fd);
-      } else if (flags & EPOLLOUT) {
+      }
+      if (flags & EPOLLOUT) {
         WriteTo(fd);
-      } else {
+      }
+      
+      if (flags & EPOLLIN ==  0 || flags & EPOLLOUT ==  0) {
         std::cout << "unnecessary wake up" << std::endl;
       }
     }
