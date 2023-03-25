@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <cstring>
 #include <ctime>
 #include <iostream>
@@ -356,7 +357,7 @@ class Message {
  public:
   Message() {
     // greater than MSS
-    buf_.resize(2048);
+    buf_.resize(8192);
   }
 
   void Insert(const char* buf, size_t len) {
@@ -370,7 +371,7 @@ class Message {
     in_use_ += len;
   }
 
-  const char* data() const { return buf_.data(); }
+  const char* const_data() const { return buf_.data(); }
 
   char* data() { return buf_.data() + in_use_; }
 
@@ -381,7 +382,11 @@ class Message {
   size_t& in_use() { return in_use_; }
 
   void drain(std::string& s) {
-    s.assign(data(), data() + in_use());
+    s.assign(const_data(), const_data() + in_use());
+    in_use_ = 0;
+  }
+
+  void drain() {
     in_use_ = 0;
   }
 
@@ -405,7 +410,7 @@ class TcpChannelId {
 class TcpChannel {
  public:
   TcpChannel(TcpChannelId id) : id_(id) {}
-  int Send() { return send(id_, msg_for_send_.data(), msg_for_send_.in_use(), 0); }
+  int Send() { return send(id_, msg_for_send_.const_data(), msg_for_send_.in_use(), 0); }
 
   int Recv() {
     ssize_t n = recv(id_, msg_for_recv_.data(), msg_for_recv_.available(), 0);
@@ -414,13 +419,16 @@ class TcpChannel {
     }
     msg_for_recv_.in_use() += n;
     std::cout << n << " bytes received" << std::endl;
-    std::string out;
-    msg_for_recv_.drain(out);
-    std::cout << out << std::endl;
 
-    msg_for_send_.Insert(msg_for_recv_.data(), msg_for_recv_.in_use());
-    n = Send();
-    std::cout << n << " bytes sent..." << std::endl;
+    msg_for_send_.Insert(msg_for_recv_.const_data(), msg_for_recv_.in_use());
+    int ns = Send();
+    std::cout << ns << " bytes sent..." << std::endl;
+
+    std::ofstream ofs("hello.cc", std::ios::app);
+    ofs.write(msg_for_recv_.const_data(), msg_for_recv_.in_use());
+    ofs.close();
+
+    msg_for_recv_.drain();
 
     return n;
   }
@@ -506,6 +514,16 @@ class TcpServer {
     printf("new client connected, fd=%d, address=%s:%d\n", conn_fd,
            inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
 
+
+    int sndbuf_size = 1024;  // set the buffer size to 4KB
+    int result = setsockopt(conn_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
+    if (result == -1) {
+      perror("setsockopt(with SO_SNDBUF)");
+      return;
+    }
+    SetNonblocking(conn_fd);
+
+    // TODO: release memory
     TcpChannel* chan = new TcpChannel(conn_fd);
     auto es = EventSourceList::Global().CreateEventSource(conn_fd);
     // es->eoi = Event::Read | Event::Write;
