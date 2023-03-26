@@ -12,13 +12,13 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <functional>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <list>
 #include <thread>
@@ -127,14 +127,10 @@ class Eoi {
   Eoi(Event e) { e_ = static_cast<uint32_t>(e); }
   Eoi(unsigned int e) : e_(e) {}
   operator uint32_t() const { return e_; }
-  Eoi operator&(Event e) const {
-    return e_ & Eoi(e).e_;
-  }
-  Eoi operator|(Event e) const {
-    return e_ | (uint8_t)e;
-  }
+  Eoi operator&(Event e) const { return e_ & Eoi(e).e_; }
+  Eoi operator|(Event e) const { return e_ | (uint8_t)e; }
   Eoi& operator|=(Event e) {
-    e_ = (uint8_t) e | e_;
+    e_ = (uint8_t)e | e_;
     return *this;
   }
 
@@ -177,15 +173,15 @@ class FastList {
     return e;
   }
 
-  void Remove(const T* e) {
-    Remove(e->id);
-  }
+  void Remove(const T* e) { Remove(e->id); }
 
   void Remove(uint32_t id) {
     auto it = lut_.find(id);
     if (it != lut_.end()) {
-      delete *it->second;
+      T* p = *it->second;
       elements_.erase(it->second);
+      lut_.erase(it);
+      delete p;
     }
   }
 
@@ -199,7 +195,8 @@ class FastList {
 
  private:
   using PointerList = std::list<T*>;
-  using LookupTable = std::unordered_map<uint32_t, typename PointerList::iterator>;
+  using LookupTable =
+      std::unordered_map<uint32_t, typename PointerList::iterator>;
   PointerList elements_;
   LookupTable lut_;
 };
@@ -236,22 +233,21 @@ class EventCenter {
   }
 
   using OnCloseHandle = std::function<void(uint32_t)>;
-  void OnClose(OnCloseHandle func) {
-    on_close_ = func;
-  }
+  void OnClose(OnCloseHandle func) { on_close_ = func; }
 
-  void HandleEventStatus(const EventStatus& status, EventSource* es) {
+  bool HandleEventStatus(const EventStatus& status, EventSource* es) {
     switch (status) {
       case EventStatus::NoMore: {
         std::cout << "fd " << es->id << " no more data" << std::endl;
         Remove(es);
         close(es->id);
-        events_.Remove(es);
         on_close_(es->id);
-        break;
+        events_.Remove(es);
+        return false;
       }
       case EventStatus::MoreSent: {
         if (!(es->eoi & Event::Write)) {
+          std::cout << "******install write handler" << std::endl;
           es->eoi |= Event::Write;
           Add(es, false);
         }
@@ -259,6 +255,7 @@ class EventCenter {
       }
       case EventStatus::AllSent: {
         if (es->eoi & Event::Write) {
+          std::cout << "******remove write handler" << std::endl;
           es->eoi = Event::Read;
           Add(es, false);
         }
@@ -271,6 +268,7 @@ class EventCenter {
       default:
         break;
     }
+    return true;
   }
 
   bool Run() {
@@ -301,7 +299,7 @@ class EventCenter {
 
         if (es->eoi & readable && es->read_handler) {
           EventStatus s = es->read_handler(es->id, es->obj);
-          HandleEventStatus(s, es);
+          if (!HandleEventStatus(s, es)) continue;
         }
 
         if (es->eoi & writable && es->write_handler) {
@@ -438,7 +436,7 @@ class TcpChannel {
         tx_status_ = EventStatus::MoreSent;
       } else {
         perror("send error");
-        tx_status_ =  EventStatus::NoMore;
+        tx_status_ = EventStatus::NoMore;
       }
     } else if (n == 0) {
       std::cout << "writable but nothing to send..." << std::endl;
@@ -446,15 +444,14 @@ class TcpChannel {
     } else {
       msg_tx_.add_n_sent(n);
       std::cout << n << " bytes sent..." << std::endl;
-      tx_status_ = HasPendingData() ? EventStatus::MoreSent : EventStatus::AllSent;
+      tx_status_ =
+          HasPendingData() ? EventStatus::MoreSent : EventStatus::AllSent;
     }
 
     return tx_status_;
   }
 
-  bool HasPendingData() {
-    return msg_tx_.n_to_send() > 0;
-  }
+  bool HasPendingData() { return msg_tx_.n_to_send() > 0; }
 
   // level-trigger
   EventStatus Recv() {
@@ -502,9 +499,7 @@ class TcpChannel {
 class TcpServer {
  public:
   TcpServer(EventCenter* ec) : ec_(ec) {
-    ec_->OnClose([this](uint32_t id){
-      RemoveClient(id);
-    });
+    ec_->OnClose([this](uint32_t id) { RemoveClient(id); });
   }
 
   bool Listen(int port, const std::string& address = "*") {
@@ -555,9 +550,7 @@ class TcpServer {
     return EventStatus::RecvMore;
   }
 
-  void RemoveClient(TcpChannelId id) {
-    clients_.Remove(id);
-  }
+  void RemoveClient(TcpChannelId id) { clients_.Remove(id); }
 
  private:
   void Accept(EventSourceId listen_fd) {
@@ -616,7 +609,7 @@ int main() {
   ec.Build();
 
   TcpServer server(&ec);
-  if (!server.Listen(8118)) {
+  if (!server.Listen(8000)) {
     return 1;
   }
 
