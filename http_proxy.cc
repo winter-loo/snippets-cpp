@@ -12,12 +12,13 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <functional>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
-#include <fstream>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <list>
 #include <thread>
@@ -94,8 +95,6 @@ class DnsResolver {
   size_t idx_in_use_{};
 };
 
-enum class EventSourceKind { Listening, Timer, Signal, IO };
-
 class EventSourceId {
  public:
   EventSourceId() = default;
@@ -128,91 +127,80 @@ class Eoi {
   Eoi(Event e) { e_ = static_cast<uint32_t>(e); }
   Eoi(unsigned int e) : e_(e) {}
   operator uint32_t() const { return e_; }
+  Eoi operator&(Event e) const {
+    return e_ & Eoi(e).e_;
+  }
+  Eoi operator|(Event e) const {
+    return e_ | (uint8_t)e;
+  }
+  Eoi& operator|=(Event e) {
+    e_ = (uint8_t) e | e_;
+    return *this;
+  }
 
  private:
   uint8_t e_;
 };
 Eoi operator|(Event a, Event b) { return Eoi(a) | Eoi(b); }
 
-enum class EventStatusKind { NoMore, HasMore };
-
-struct StatusHasMore {
-  uint64_t n_rx;
-  uint64_t n_tx;
-};
-struct StatusNoMore {};
-
-union StatusDetail {
-  StatusHasMore has_more;
-  StatusNoMore no_more;
-};
-
-struct EventStatus {
-  EventStatusKind kind;
-  StatusDetail detail;
-};
-
-EventStatus CreateStatusHasMore(uint64_t n_rx = 0, uint64_t n_tx = 0) {
-  return EventStatus{
-    kind : EventStatusKind::HasMore,
-    detail : StatusDetail{has_more : StatusHasMore{n_rx : n_rx, n_tx : n_tx}}
-  };
-}
-EventStatus CreateStatusNoMore() {
-  return EventStatus{
-    kind: EventStatusKind::NoMore
-  };
-}
+enum class EventStatus { NoMore, RecvMore, MoreSent, AllSent };
 
 struct EventSource {
   EventSourceId id;
   // events of interested
   Eoi eoi;
-  EventSourceKind kind;
-  EventStatus (*read)(EventSourceId, void*);
-  EventStatus (*write)(EventSourceId, void*);
+  EventStatus (*read_handler)(EventSourceId, void*);
+  EventStatus (*write_handler)(EventSourceId, void*);
   void* obj;
 
   EventSource(EventSourceId id) : id(id) {}
   bool operator==(const EventSource& other) const { return id == other.id; }
 };
 
-class EventSourceList {
+template <typename T>
+class FastList {
  public:
-  EventSourceList() = default;
+  FastList() = default;
 
-  static EventSourceList& Global() {
-    static EventSourceList g;
-    return g;
-  }
-
-  ~EventSourceList() {
-    while (!sources_.empty()) {
-      auto p = sources_.back();
+  ~FastList() {
+    while (!elements_.empty()) {
+      auto p = elements_.back();
       delete p;
-      sources_.pop_back();
+      elements_.pop_back();
     }
   }
 
-  EventSource* CreateEventSource(EventSourceId id) {
-    auto es = new EventSource(id);
-    auto it = sources_.insert(sources_.end(), es);
+  T* Add(uint32_t id) {
+    auto e = new T(id);
+    auto it = elements_.insert(elements_.end(), e);
     lut_.insert({id, it});
-    return es;
+    return e;
   }
 
-  void RemoveEventSource(const EventSource* es) {
-    auto it = lut_.find(es->id);
+  void Remove(const T* e) {
+    Remove(e->id);
+  }
+
+  void Remove(uint32_t id) {
+    auto it = lut_.find(id);
     if (it != lut_.end()) {
       delete *it->second;
-      sources_.erase(it->second);
+      elements_.erase(it->second);
     }
+  }
+
+  T* Find(uint32_t id) {
+    auto it = lut_.find(id);
+    if (it != lut_.end()) {
+      return *it->second;
+    }
+    return nullptr;
   }
 
  private:
-  using EsList = std::list<EventSource*>;
-  using LookupTable = std::unordered_map<EventSourceId, EsList::iterator>;
-  EsList sources_;
+  using PointerList = std::list<T*>;
+  using LookupTable = std::unordered_map<uint32_t, typename PointerList::iterator>;
+  PointerList elements_;
   LookupTable lut_;
 };
 
@@ -225,11 +213,15 @@ class EventCenter {
     }
     return true;
   }
-  bool Add(EventSource* es) {
+  EventSource* CreateEvent(EventSourceId id) { return events_.Add(id); }
+  EventSource* Find(EventSourceId id) { return events_.Find(id); }
+
+  bool Add(EventSource* es, bool add = true) {
     struct epoll_event ev;
     ev.events = es->eoi;
     ev.data.ptr = es;
-    if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, es->id, &ev) < 0) {
+    int op = add ? EPOLL_CTL_ADD : EPOLL_CTL_MOD;
+    if (epoll_ctl(epoll_fd_, op, es->id, &ev) < 0) {
       perror("epoll_ctl add error");
       return false;
     }
@@ -243,16 +235,36 @@ class EventCenter {
     return true;
   }
 
+  using OnCloseHandle = std::function<void(uint32_t)>;
+  void OnClose(OnCloseHandle func) {
+    on_close_ = func;
+  }
+
   void HandleEventStatus(const EventStatus& status, EventSource* es) {
-    switch (status.kind) {
-      case EventStatusKind::NoMore: {
+    switch (status) {
+      case EventStatus::NoMore: {
         std::cout << "fd " << es->id << " no more data" << std::endl;
         Remove(es);
         close(es->id);
-        EventSourceList::Global().RemoveEventSource(es);
+        events_.Remove(es);
+        on_close_(es->id);
         break;
       }
-      case EventStatusKind::HasMore: {
+      case EventStatus::MoreSent: {
+        if (!(es->eoi & Event::Write)) {
+          es->eoi |= Event::Write;
+          Add(es, false);
+        }
+        break;
+      }
+      case EventStatus::AllSent: {
+        if (es->eoi & Event::Write) {
+          es->eoi = Event::Read;
+          Add(es, false);
+        }
+        break;
+      }
+      case EventStatus::RecvMore: {
         std::cout << "fd " << es->id << " has more" << std::endl;
         break;
       }
@@ -276,6 +288,7 @@ class EventCenter {
       std::cout << "epoll wait..." << std::endl;
       nfds = epoll_wait(epoll_fd_, events, kMaxEvents, -1);
       if (nfds < 0) {
+        if (errno == EINTR) continue;
         perror("epoll_wait error");
         return false;
       }
@@ -286,13 +299,13 @@ class EventCenter {
         int readable = flags & EPOLLIN;
         int writable = flags & EPOLLOUT;
 
-        if (es->eoi & readable) {
-          EventStatus s = es->read(es->id, es->obj);
+        if (es->eoi & readable && es->read_handler) {
+          EventStatus s = es->read_handler(es->id, es->obj);
           HandleEventStatus(s, es);
         }
 
-        if (es->eoi & writable) {
-          EventStatus s = es->write(es->id, es->obj);
+        if (es->eoi & writable && es->write_handler) {
+          EventStatus s = es->write_handler(es->id, es->obj);
           HandleEventStatus(s, es);
         }
 
@@ -330,17 +343,16 @@ class EventCenter {
       exit(1);
     }
 
-    auto es = EventSourceList::Global().CreateEventSource(sfd);
+    auto es = CreateEvent(sfd);
     es->eoi = Event::Read;
-    es->kind = EventSourceKind::Signal;
-    es->read = EventCenter::QuitWrapper;
+    es->read_handler = EventCenter::QuitWrapper;
     es->obj = this;
     Add(es);
   }
 
   static EventStatus QuitWrapper(EventSourceId, void* obj) {
     static_cast<EventCenter*>(obj)->Quit();
-    return EventStatus{kind : EventStatusKind::NoMore};
+    return EventStatus::NoMore;
   }
 
   void Quit() {
@@ -349,8 +361,10 @@ class EventCenter {
   }
 
  private:
+  FastList<EventSource> events_;
   int epoll_fd_;
   bool pending_;
+  OnCloseHandle on_close_;
 };
 
 class Message {
@@ -367,32 +381,37 @@ class Message {
 
   void Append(const std::string& s) {}
   void Append(const char* buf, size_t len) {
-    buf_.insert(buf_.end(), buf, buf + len);
+    if (in_use_ + len > buf_.size()) {
+      buf_.resize(std::max(in_use_ + len, buf_.size() * 2));
+    }
+    memcpy(data(), buf, len);
     in_use_ += len;
   }
+
+  const char* to_send() const { return buf_.data() + n_sent_; }
+  size_t n_to_send() const { return in_use_ - n_sent_; }
+  void add_n_sent(int n) { n_sent_ += n; }
 
   const char* const_data() const { return buf_.data(); }
 
   char* data() { return buf_.data() + in_use_; }
 
-  size_t size() const { return in_use_; }
+  size_t in_use() const { return in_use_; }
 
   size_t available() const { return buf_.size() - in_use_; }
 
-  size_t& in_use() { return in_use_; }
+  void add_in_use(int n) { in_use_ += n; }
 
   void drain(std::string& s) {
     s.assign(const_data(), const_data() + in_use());
     in_use_ = 0;
   }
 
-  void drain() {
-    in_use_ = 0;
-  }
-
+  void drain() { in_use_ = 0; }
 
  private:
   size_t in_use_{};
+  size_t n_sent_{};
   std::vector<char> buf_;
 };
 
@@ -402,6 +421,7 @@ class TcpChannelId {
   TcpChannelId(int id) : id_(id) {}
 
   operator int() const { return id_; }
+  operator EventSourceId() const { return id_; }
 
  private:
   uint32_t id_;
@@ -409,49 +429,83 @@ class TcpChannelId {
 
 class TcpChannel {
  public:
-  TcpChannel(TcpChannelId id) : id_(id) {}
-  int Send() { return send(id_, msg_for_send_.const_data(), msg_for_send_.in_use(), 0); }
+  TcpChannel(TcpChannelId id) : id_(id), tx_status_(EventStatus::AllSent) {}
 
-  int Recv() {
-    ssize_t n = recv(id_, msg_for_recv_.data(), msg_for_recv_.available(), 0);
+  EventStatus Send() {
+    int n = send(id_, msg_tx_.to_send(), msg_tx_.n_to_send(), 0);
     if (n < 0) {
-      perror("recv error");
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        tx_status_ = EventStatus::MoreSent;
+      } else {
+        perror("send error");
+        tx_status_ =  EventStatus::NoMore;
+      }
+    } else if (n == 0) {
+      std::cout << "writable but nothing to send..." << std::endl;
+      tx_status_ = EventStatus::AllSent;
+    } else {
+      msg_tx_.add_n_sent(n);
+      std::cout << n << " bytes sent..." << std::endl;
+      tx_status_ = HasPendingData() ? EventStatus::MoreSent : EventStatus::AllSent;
     }
-    msg_for_recv_.in_use() += n;
+
+    return tx_status_;
+  }
+
+  bool HasPendingData() {
+    return msg_tx_.n_to_send() > 0;
+  }
+
+  // level-trigger
+  EventStatus Recv() {
+    EventStatus status;
+    ssize_t n = recv(id_, msg_rx_.data(), msg_rx_.available(), 0);
+    if (n <= 0) {
+      if (n < 0) perror("recv error");
+      return EventStatus::NoMore;
+    }
+    msg_rx_.add_in_use(n);
     std::cout << n << " bytes received" << std::endl;
 
-    msg_for_send_.Insert(msg_for_recv_.const_data(), msg_for_recv_.in_use());
-    int ns = Send();
-    std::cout << ns << " bytes sent..." << std::endl;
+    if (msg_tx_.in_use() == 0) {
+      msg_tx_.Insert(msg_rx_.const_data(), msg_rx_.in_use());
+    } else {
+      msg_tx_.Append(msg_rx_.const_data(), msg_rx_.in_use());
+    }
+
+    if (tx_status_ != EventStatus::MoreSent) Send();
 
     std::ofstream ofs("hello.cc", std::ios::app);
-    ofs.write(msg_for_recv_.const_data(), msg_for_recv_.in_use());
+    ofs.write(msg_rx_.const_data(), msg_rx_.in_use());
     ofs.close();
 
-    msg_for_recv_.drain();
+    msg_rx_.drain();
 
-    return n;
+    return tx_status_;
   }
 
   static EventStatus RecvWrapper(EventSourceId id, void* obj) {
-    int n = static_cast<TcpChannel*>(obj)->Recv();
-    return n <= 0 ? CreateStatusNoMore() : CreateStatusHasMore(n, 0);
+    return static_cast<TcpChannel*>(obj)->Recv();
   }
 
   static EventStatus SendWrapper(EventSourceId id, void* obj) {
-    int n = static_cast<TcpChannel*>(obj)->Send();
-    return CreateStatusHasMore(0, n);
+    return static_cast<TcpChannel*>(obj)->Send();
   }
 
  private:
-  Message msg_for_recv_;
-  Message msg_for_send_;
+  Message msg_rx_;
+  Message msg_tx_;
+  EventStatus tx_status_;
   TcpChannelId id_;
 };
 
 class TcpServer {
  public:
-  TcpServer(EventCenter* ec) : ec_(ec) {}
+  TcpServer(EventCenter* ec) : ec_(ec) {
+    ec_->OnClose([this](uint32_t id){
+      RemoveClient(id);
+    });
+  }
 
   bool Listen(int port, const std::string& address = "*") {
     int listen_fd, epoll_fd, conn_fd, nfds, i;
@@ -465,11 +519,11 @@ class TcpServer {
     }
 
     int reuse = 1;
-    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("setsockopt(SO_REUSEADDR) failed");
-        return false;
+    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) <
+        0) {
+      perror("setsockopt(SO_REUSEADDR) failed");
+      return false;
     }
-
 
     // 绑定地址
     memset(&addr, 0, sizeof(addr));
@@ -488,10 +542,9 @@ class TcpServer {
       return false;
     }
 
-    auto es = EventSourceList::Global().CreateEventSource(listen_fd);
+    auto es = ec_->CreateEvent(listen_fd);
     es->eoi = Event::Read;
-    es->kind = EventSourceKind::Listening;
-    es->read = TcpServer::AcceptWrapper;
+    es->read_handler = TcpServer::AcceptWrapper;
     es->obj = this;
     ec_->Add(es);
     return true;
@@ -499,7 +552,11 @@ class TcpServer {
 
   static EventStatus AcceptWrapper(EventSourceId id, void* obj) {
     static_cast<TcpServer*>(obj)->Accept(id);
-    return CreateStatusHasMore();
+    return EventStatus::RecvMore;
+  }
+
+  void RemoveClient(TcpChannelId id) {
+    clients_.Remove(id);
   }
 
  private:
@@ -514,29 +571,37 @@ class TcpServer {
     printf("new client connected, fd=%d, address=%s:%d\n", conn_fd,
            inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
 
-
-    int sndbuf_size = 1024;  // set the buffer size to 4KB
-    int result = setsockopt(conn_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
+    int sndbuf_size = 2920;  // set the buffer size to 4KB
+    int result = setsockopt(conn_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf_size,
+                            sizeof(sndbuf_size));
     if (result == -1) {
       perror("setsockopt(with SO_SNDBUF)");
       return;
     }
+    int actual_sndbuf = 0;
+    socklen_t optlen = sizeof(actual_sndbuf);
+    int rc =
+        getsockopt(conn_fd, SOL_SOCKET, SO_SNDBUF, &actual_sndbuf, &optlen);
+    if (rc < 0) {
+      perror("getsockopt");
+      exit(EXIT_FAILURE);
+    }
+    printf("Send buffer size: %d\n", actual_sndbuf);
+
     SetNonblocking(conn_fd);
 
-    // TODO: release memory
-    TcpChannel* chan = new TcpChannel(conn_fd);
-    auto es = EventSourceList::Global().CreateEventSource(conn_fd);
-    // es->eoi = Event::Read | Event::Write;
+    auto chan = clients_.Add(conn_fd);
+    auto es = ec_->CreateEvent(conn_fd);
     es->eoi = Event::Read;
-    es->kind = EventSourceKind::IO;
-    es->read = TcpChannel::RecvWrapper;
-    es->write = TcpChannel::SendWrapper;
+    es->read_handler = TcpChannel::RecvWrapper;
+    es->write_handler = TcpChannel::SendWrapper;
     es->obj = chan;
     ec_->Add(es);
   }
 
  private:
   EventCenter* ec_;
+  FastList<TcpChannel> clients_;
   bool pending_{false};
 };
 
