@@ -1,8 +1,7 @@
+#include <atomic>
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <atomic>
-
 
 int main() {
   bool expected = true;
@@ -11,7 +10,9 @@ int main() {
   if (b.compare_exchange_weak(expected, false)) {
     std::cout << "b set to desired value: " << b;
   } else {
-    std::cout << "not equal, expected value is updated to atomic variable value: " <<  expected;
+    std::cout
+        << "not equal, expected value is updated to atomic variable value: "
+        << expected;
   }
   std::cout << std::endl;
   return 0;

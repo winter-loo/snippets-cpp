@@ -1,10 +1,12 @@
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
+#include <assert.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <resolv.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
@@ -21,26 +23,28 @@
 #include <functional>
 #include <iostream>
 #include <list>
+#include <memory>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
-static int SetNonblocking(int fd) {
+static bool SetNonblocking(int fd, bool val = true) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags == -1) {
     perror("fcntl F_GETFL");
-    return -1;
+    return false;
   }
-  if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+  int blocking = val ? O_NONBLOCK : ~O_NONBLOCK;
+  if (fcntl(fd, F_SETFL, flags | blocking) == -1) {
     perror("fcntl F_SETFL O_NONBLOCK");
-    return -1;
+    return false;
   }
-  return 0;
+  return true;
 }
 
 class DnsResolver {
  public:
-  bool Resolve(const std::string& hostname) {
+  bool Resolve(const std::string &hostname) {
     struct addrinfo hints, *result, *rp;
 
     // Set up hints structure for getaddrinfo()
@@ -61,7 +65,7 @@ class DnsResolver {
     for (rp = result; rp != NULL; rp = rp->ai_next) {
       if (rp->ai_family != AF_INET) continue;          // Only need IPv4 address
       if ((rp->ai_flags & AI_PASSIVE) != 0) continue;  // Skip wildcard address
-      auto addr = ((struct sockaddr_in*)(rp->ai_addr))->sin_addr;
+      auto addr = ((struct sockaddr_in *)(rp->ai_addr))->sin_addr;
       if (addr.s_addr == 0) continue;  // Skip wildcard address
       addresses_.push_back(inet_ntoa(addr));
     }
@@ -111,7 +115,7 @@ class EventSourceId {
 namespace std {
 template <>
 struct hash<EventSourceId> {
-  size_t operator()(const EventSourceId& id) const {
+  size_t operator()(const EventSourceId &id) const {
     return hash<uint32_t>()(id);
   }
 };
@@ -129,7 +133,7 @@ class Eoi {
   operator uint32_t() const { return e_; }
   Eoi operator&(Event e) const { return e_ & Eoi(e).e_; }
   Eoi operator|(Event e) const { return e_ | (uint8_t)e; }
-  Eoi& operator|=(Event e) {
+  Eoi &operator|=(Event e) {
     e_ = (uint8_t)e | e_;
     return *this;
   }
@@ -139,18 +143,18 @@ class Eoi {
 };
 Eoi operator|(Event a, Event b) { return Eoi(a) | Eoi(b); }
 
-enum class EventStatus { NoMore, RecvMore, MoreSent, AllSent };
+enum class EventStatus { NoMore, MoreToRecv, MoreToSend, AllSent };
 
 struct EventSource {
   EventSourceId id;
   // events of interested
   Eoi eoi;
-  EventStatus (*read_handler)(EventSourceId, void*);
-  EventStatus (*write_handler)(EventSourceId, void*);
-  void* obj;
+  EventStatus (*read_handler)(EventSourceId, void *);
+  EventStatus (*write_handler)(EventSourceId, void *);
+  void *obj;
 
   EventSource(EventSourceId id) : id(id) {}
-  bool operator==(const EventSource& other) const { return id == other.id; }
+  bool operator==(const EventSource &other) const { return id == other.id; }
 };
 
 template <typename T>
@@ -166,26 +170,26 @@ class FastList {
     }
   }
 
-  T* Add(uint32_t id) {
+  T *Add(uint32_t id) {
     auto e = new T(id);
     auto it = elements_.insert(elements_.end(), e);
     lut_.insert({id, it});
     return e;
   }
 
-  void Remove(const T* e) { Remove(e->id); }
+  void Remove(const T *e) { Remove(e->id); }
 
   void Remove(uint32_t id) {
     auto it = lut_.find(id);
     if (it != lut_.end()) {
-      T* p = *it->second;
+      T *p = *it->second;
       elements_.erase(it->second);
       lut_.erase(it);
       delete p;
     }
   }
 
-  T* Find(uint32_t id) {
+  T *Find(uint32_t id) {
     auto it = lut_.find(id);
     if (it != lut_.end()) {
       return *it->second;
@@ -194,7 +198,7 @@ class FastList {
   }
 
  private:
-  using PointerList = std::list<T*>;
+  using PointerList = std::list<T *>;
   using LookupTable =
       std::unordered_map<uint32_t, typename PointerList::iterator>;
   PointerList elements_;
@@ -210,10 +214,10 @@ class EventCenter {
     }
     return true;
   }
-  EventSource* CreateEvent(EventSourceId id) { return events_.Add(id); }
-  EventSource* Find(EventSourceId id) { return events_.Find(id); }
+  EventSource *CreateEvent(EventSourceId id) { return events_.Add(id); }
+  EventSource *Find(EventSourceId id) { return events_.Find(id); }
 
-  bool Add(EventSource* es, bool add = true) {
+  bool Add(EventSource *es, bool add = true) {
     struct epoll_event ev;
     ev.events = es->eoi;
     ev.data.ptr = es;
@@ -224,7 +228,7 @@ class EventCenter {
     }
     return true;
   }
-  bool Remove(EventSource* es) {
+  bool Remove(EventSource *es) {
     if (-1 == epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, es->id, NULL)) {
       perror("epoll_ctl del error");
       return false;
@@ -235,17 +239,17 @@ class EventCenter {
   using OnCloseHandle = std::function<void(uint32_t)>;
   void OnClose(OnCloseHandle func) { on_close_ = func; }
 
-  bool HandleEventStatus(const EventStatus& status, EventSource* es) {
+  bool HandleEventStatus(const EventStatus &status, EventSource *es) {
     switch (status) {
       case EventStatus::NoMore: {
         std::cout << "fd " << es->id << " no more data" << std::endl;
         Remove(es);
         close(es->id);
-        on_close_(es->id);
+        if (on_close_) on_close_(es->id);
         events_.Remove(es);
         return false;
       }
-      case EventStatus::MoreSent: {
+      case EventStatus::MoreToSend: {
         if (!(es->eoi & Event::Write)) {
           std::cout << "******install write handler" << std::endl;
           es->eoi |= Event::Write;
@@ -261,7 +265,7 @@ class EventCenter {
         }
         break;
       }
-      case EventStatus::RecvMore: {
+      case EventStatus::MoreToRecv: {
         std::cout << "fd " << es->id << " has more" << std::endl;
         break;
       }
@@ -277,10 +281,8 @@ class EventCenter {
 
     // TODO: how could I know how many events need be waited for
     constexpr const int kMaxEvents = 1024;
-    struct epoll_event ev, events[kMaxEvents];
+    struct epoll_event events[kMaxEvents];
     int nfds;
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(addr);
 
     while (pending_) {
       std::cout << "epoll wait..." << std::endl;
@@ -293,7 +295,7 @@ class EventCenter {
       std::cout << "kernel says " << nfds << " fd ready..." << std::endl;
       for (int i = 0; i < nfds; i++) {
         int flags = events[i].events;
-        EventSource* es = static_cast<EventSource*>(events[i].data.ptr);
+        EventSource *es = static_cast<EventSource *>(events[i].data.ptr);
         int readable = flags & EPOLLIN;
         int writable = flags & EPOLLOUT;
 
@@ -348,8 +350,8 @@ class EventCenter {
     Add(es);
   }
 
-  static EventStatus QuitWrapper(EventSourceId, void* obj) {
-    static_cast<EventCenter*>(obj)->Quit();
+  static EventStatus QuitWrapper(EventSourceId, void *obj) {
+    static_cast<EventCenter *>(obj)->Quit();
     return EventStatus::NoMore;
   }
 
@@ -367,18 +369,14 @@ class EventCenter {
 
 class Message {
  public:
-  Message() {
-    // greater than MSS
-    buf_.resize(8192);
-  }
+  Message() { buf_.resize(8192); }
 
-  void Insert(const char* buf, size_t len) {
+  void Insert(const char *buf, size_t len) {
     buf_.assign(buf, buf + len);
     in_use_ = len;
   }
 
-  void Append(const std::string& s) {}
-  void Append(const char* buf, size_t len) {
+  void Append(const char *buf, size_t len) {
     if (in_use_ + len > buf_.size()) {
       buf_.resize(std::max(in_use_ + len, buf_.size() * 2));
     }
@@ -386,21 +384,28 @@ class Message {
     in_use_ += len;
   }
 
-  const char* to_send() const { return buf_.data() + n_sent_; }
+  const char *to_send() const { return buf_.data() + n_sent_; }
   size_t n_to_send() const { return in_use_ - n_sent_; }
   void add_n_sent(int n) { n_sent_ += n; }
 
-  const char* const_data() const { return buf_.data(); }
+  const char *const_data() const { return buf_.data(); }
 
-  char* data() { return buf_.data() + in_use_; }
+  char *data() { return buf_.data() + in_use_; }
 
   size_t in_use() const { return in_use_; }
 
-  size_t available() const { return buf_.size() - in_use_; }
+  size_t available(bool expand = false) {
+    auto ans = buf_.size() - in_use_;
+    if (ans == 0 && expand) {
+      buf_.resize(buf_.size() * 2);
+      ans = buf_.size() - in_use_;
+    }
+    return ans;
+  }
 
   void add_in_use(int n) { in_use_ += n; }
 
-  void drain(std::string& s) {
+  void drain(std::string &s) {
     s.assign(const_data(), const_data() + in_use());
     in_use_ = 0;
   }
@@ -425,15 +430,21 @@ class TcpChannelId {
   uint32_t id_;
 };
 
+using MsgParseFn = std::function<void(Message &, Message &)>;
+
 class TcpChannel {
  public:
-  TcpChannel(TcpChannelId id) : id_(id), tx_status_(EventStatus::AllSent) {}
+  TcpChannel(TcpChannelId id)
+      : expand_rx_buffer_(false), id_(id), tx_status_(EventStatus::AllSent) {}
+
+  void SetMsgParser(MsgParseFn fn) { parse_fn_ = fn; }
+  void SetExpandRxBuffer(bool expand) { expand_rx_buffer_ = expand; }
 
   EventStatus Send() {
-    int n = send(id_, msg_tx_.to_send(), msg_tx_.n_to_send(), 0);
+    int n = send(id_, msg_tx_.to_send(), msg_tx_.n_to_send(), MSG_NOSIGNAL);
     if (n < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        tx_status_ = EventStatus::MoreSent;
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EPIPE) {
+        tx_status_ = EventStatus::MoreToSend;
       } else {
         perror("send error");
         tx_status_ = EventStatus::NoMore;
@@ -445,7 +456,7 @@ class TcpChannel {
       msg_tx_.add_n_sent(n);
       std::cout << n << " bytes sent..." << std::endl;
       tx_status_ =
-          HasPendingData() ? EventStatus::MoreSent : EventStatus::AllSent;
+          HasPendingData() ? EventStatus::MoreToSend : EventStatus::AllSent;
     }
 
     return tx_status_;
@@ -455,8 +466,8 @@ class TcpChannel {
 
   // level-trigger
   EventStatus Recv() {
-    EventStatus status;
-    ssize_t n = recv(id_, msg_rx_.data(), msg_rx_.available(), 0);
+    ssize_t n =
+        recv(id_, msg_rx_.data(), msg_rx_.available(expand_rx_buffer_), 0);
     if (n <= 0) {
       if (n < 0) perror("recv error");
       return EventStatus::NoMore;
@@ -464,47 +475,58 @@ class TcpChannel {
     msg_rx_.add_in_use(n);
     std::cout << n << " bytes received" << std::endl;
 
-    if (msg_tx_.in_use() == 0) {
-      msg_tx_.Insert(msg_rx_.const_data(), msg_rx_.in_use());
-    } else {
-      msg_tx_.Append(msg_rx_.const_data(), msg_rx_.in_use());
-    }
+    if (parse_fn_) parse_fn_(msg_rx_, msg_tx_);
 
-    if (tx_status_ != EventStatus::MoreSent) Send();
+    // std::cout.write(msg_rx_.const_data(), msg_rx_.in_use());
+    // std::cout.flush();
 
-    std::ofstream ofs("hello.cc", std::ios::app);
-    ofs.write(msg_rx_.const_data(), msg_rx_.in_use());
-    ofs.close();
+    // if (msg_tx_.in_use() == 0) {
+    //   msg_tx_.Insert(msg_rx_.const_data(), msg_rx_.in_use());
+    // } else {
+    //   msg_tx_.Append(msg_rx_.const_data(), msg_rx_.in_use());
+    // }
 
-    msg_rx_.drain();
+    if (msg_tx_.n_to_send() > 0 && tx_status_ != EventStatus::MoreToSend)
+      Send();
+
+    // std::ofstream ofs("hello.cc", std::ios::app);
+    // ofs.write(msg_rx_.const_data(), msg_rx_.in_use());
+    // ofs.close();
+
+    // msg_rx_.drain();
 
     return tx_status_;
   }
 
-  static EventStatus RecvWrapper(EventSourceId id, void* obj) {
-    return static_cast<TcpChannel*>(obj)->Recv();
+  Message &msg_tx() { return msg_tx_; }
+
+  static EventStatus RecvWrapper(EventSourceId id, void *obj) {
+    return static_cast<TcpChannel *>(obj)->Recv();
   }
 
-  static EventStatus SendWrapper(EventSourceId id, void* obj) {
-    return static_cast<TcpChannel*>(obj)->Send();
+  static EventStatus SendWrapper(EventSourceId id, void *obj) {
+    return static_cast<TcpChannel *>(obj)->Send();
   }
 
  private:
+  bool expand_rx_buffer_;
   Message msg_rx_;
   Message msg_tx_;
-  EventStatus tx_status_;
   TcpChannelId id_;
+  EventStatus tx_status_;
+  MsgParseFn parse_fn_;
 };
 
 class TcpServer {
  public:
-  TcpServer(EventCenter* ec) : ec_(ec) {
+  TcpServer(EventCenter *ec) : ec_(ec) {
     ec_->OnClose([this](uint32_t id) { RemoveClient(id); });
   }
 
-  bool Listen(int port, const std::string& address = "*") {
-    int listen_fd, epoll_fd, conn_fd, nfds, i;
-    struct epoll_event ev, events[1];
+  void OnMessage(MsgParseFn parse_fn) { parse_fn_ = parse_fn; }
+
+  bool Listen(int port, const std::string &address = "*") {
+    int listen_fd;
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
 
@@ -526,7 +548,7 @@ class TcpServer {
     addr.sin_addr.s_addr =
         (address == "*") ? htonl(INADDR_ANY) : inet_addr(address.c_str());
     addr.sin_port = htons(port);
-    if (bind(listen_fd, (struct sockaddr*)&addr, addr_len) < 0) {
+    if (bind(listen_fd, (struct sockaddr *)&addr, addr_len) < 0) {
       perror("bind error");
       return false;
     }
@@ -545,9 +567,9 @@ class TcpServer {
     return true;
   }
 
-  static EventStatus AcceptWrapper(EventSourceId id, void* obj) {
-    static_cast<TcpServer*>(obj)->Accept(id);
-    return EventStatus::RecvMore;
+  static EventStatus AcceptWrapper(EventSourceId id, void *obj) {
+    static_cast<TcpServer *>(obj)->Accept(id);
+    return EventStatus::MoreToRecv;
   }
 
   void RemoveClient(TcpChannelId id) { clients_.Remove(id); }
@@ -556,7 +578,7 @@ class TcpServer {
   void Accept(EventSourceId listen_fd) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
-    int conn_fd = accept(listen_fd, (struct sockaddr*)&addr, &addr_len);
+    int conn_fd = accept(listen_fd, (struct sockaddr *)&addr, &addr_len);
     if (conn_fd < 0) {
       perror("accept error");
       exit(1);
@@ -584,6 +606,8 @@ class TcpServer {
     SetNonblocking(conn_fd);
 
     auto chan = clients_.Add(conn_fd);
+    chan->SetMsgParser(parse_fn_);
+
     auto es = ec_->CreateEvent(conn_fd);
     es->eoi = Event::Read;
     es->read_handler = TcpChannel::RecvWrapper;
@@ -593,25 +617,347 @@ class TcpServer {
   }
 
  private:
-  EventCenter* ec_;
+  EventCenter *ec_;
   FastList<TcpChannel> clients_;
   bool pending_{false};
+  MsgParseFn parse_fn_;
+};
+
+class TcpSocket {
+ public:
+  using SocketHandle = int;
+
+ private:
+  TcpSocket() {
+    // Create a socket
+    sockfd_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd_ == -1) {
+      std::cerr << "Error creating socket: " << strerror(errno) << std::endl;
+    }
+  }
+
+ public:
+  static TcpSocket Create() { return TcpSocket(); }
+
+  operator SocketHandle() { return sockfd_; }
+  operator TcpChannelId() { return sockfd_; }
+  operator EventSourceId() { return sockfd_; }
+
+  __attribute__((always_inline)) bool Good() { return sockfd_ != -1; }
+
+  bool SetNonblocking(bool val = true) {
+    return ::SetNonblocking(sockfd_, val);
+  }
+
+  bool SetSendBufferSize(int n = 16 * 1024) {
+    int result = setsockopt(sockfd_, SOL_SOCKET, SO_SNDBUF, &n, sizeof(n));
+    if (result == -1) {
+      perror("setsockopt(with SO_SNDBUF)");
+      return false;
+    }
+    return true;
+  }
+
+  int GetSendBufferSize() {
+    int actual_sndbuf = 0;
+    socklen_t optlen = sizeof(actual_sndbuf);
+    int rc =
+        getsockopt(sockfd_, SOL_SOCKET, SO_SNDBUF, &actual_sndbuf, &optlen);
+    if (rc < 0) {
+      perror("getsockopt");
+      return -1;
+    }
+    return actual_sndbuf;
+  }
+
+  bool SetReuse() {
+    int reuse = 1;
+    if (setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) <
+        0) {
+      perror("setsockopt(SO_REUSEADDR) failed");
+      return false;
+    }
+    return true;
+  }
+
+ private:
+  SocketHandle sockfd_;
+};
+
+bool IsDotDecimalFormat(std::string ipAddress) {
+  int dotCount = 0;
+  int num = 0;
+  int len = ipAddress.length();
+
+  for (int i = 0; i < len; i++) {
+    char c = ipAddress[i];
+
+    // check if character is a digit
+    if (isdigit(c)) {
+      num = num * 10 + (c - '0');
+
+      // check if number is within range of 0 to 255
+      if (num < 0 || num > 255) {
+        return false;
+      }
+    }
+    // check if character is a dot
+    else if (c == '.') {
+      // check if there are more than 3 dots
+      if (++dotCount > 3) {
+        return false;
+      }
+      num = 0;  // reset number for next octet
+    }
+    // invalid character
+    else {
+      return false;
+    }
+  }
+
+  // check if there are exactly 3 dots
+  if (dotCount != 3) {
+    return false;
+  }
+
+  return true;
+}
+
+class TcpClient {
+ public:
+  TcpClient(EventCenter *ec) : ec_(ec), sock_(TcpSocket::Create()) {
+    if (sock_.Good()) sock_.SetNonblocking();
+  }
+
+  bool Connect(const std::string &addr, int port) {
+    if (!sock_.Good()) return false;
+    std::string ip = addr;
+    if (!IsDotDecimalFormat(addr)) {
+      if (!dns_.Resolve(addr)) {
+        return false;
+      }
+      ip = dns_.NextAddress();
+    }
+
+    es_ = ec_->CreateEvent(sock_);
+    es_->eoi = Event::Write;
+    es_->write_handler = TcpClient::OnConnectWrapper;
+    es_->obj = this;
+    ec_->Add(es_);
+
+    // Connect to server
+    struct sockaddr_in server_addr_struct;
+    server_addr_struct.sin_family = AF_INET;
+    server_addr_struct.sin_addr.s_addr = inet_addr(ip.c_str());
+    server_addr_struct.sin_port = htons(port);
+    if (connect(sock_, (struct sockaddr *)&server_addr_struct,
+                sizeof(server_addr_struct)) == -1) {
+      if (errno != EINPROGRESS) {
+        std::cerr << "Error connecting to server: " << strerror(errno)
+                  << std::endl;
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static EventStatus OnConnectWrapper(EventSourceId id, void *obj) {
+    (void)id;
+    static_cast<TcpClient *>(obj)->OnConnected();
+    return EventStatus::MoreToRecv;
+  }
+
+  void OnConnected() {
+    std::cout << "Established\n" << std::endl;
+    if (chan_ == nullptr) {
+      chan_ = new TcpChannel(sock_);
+      chan_->SetMsgParser(parse_fn_);
+      // chan_->SetExpandRxBuffer(true);
+    }
+
+    es_->eoi = Event::Read;
+    es_->read_handler = TcpChannel::RecvWrapper;
+    es_->write_handler = TcpChannel::SendWrapper;
+    es_->obj = chan_;
+    ec_->Add(es_, false);
+
+    if (chan_->HasPendingData()) {
+      EventStatus status = chan_->Send();
+      if (status == EventStatus::MoreToSend) {
+        es_->eoi |= Event::Write;
+        ec_->Add(es_, false);
+      }
+    }
+  }
+
+  ~TcpClient() {
+    if (chan_) {
+      delete chan_;
+      chan_ = nullptr;
+    }
+  }
+
+  void OnMessage(MsgParseFn parse_fn) { parse_fn_ = parse_fn; }
+
+  void Send(const char *data, size_t len) {
+    if (chan_ == nullptr) {
+      chan_ = new TcpChannel(sock_);
+      chan_->SetMsgParser(parse_fn_);
+    }
+    Message &msg_tx = chan_->msg_tx();
+    msg_tx.Append(data, len);
+
+    // check whether connection established
+    if (es_ && (es_->eoi & Event::Read)) {
+      EventStatus status = chan_->Send();
+      if (status == EventStatus::MoreToSend) {
+        es_->eoi |= Event::Write;
+        ec_->Add(es_, false);
+      }
+    }
+  }
+
+ private:
+  DnsResolver dns_;
+  EventCenter *ec_;
+  EventSource *es_;
+  TcpSocket sock_;
+  TcpChannel *chan_;
+  MsgParseFn parse_fn_;
+};
+
+class HttpProxyServer {
+ public:
+  HttpProxyServer(EventCenter *ec) {
+    using namespace std::placeholders;
+    server_ = std::make_unique<TcpServer>(ec);
+    server_->OnMessage(
+        std::bind(&HttpProxyServer::ParseTcpMessage, this, _1, _2));
+
+    start_req_body_ = false;
+  }
+
+  bool Start(int port, const char *address = "*") {
+    return server_->Listen(port, address);
+  }
+
+  constexpr static const char *kHost = "Host: ";
+  constexpr static const int kLenHost = sizeof(kHost);
+  constexpr static const char *kContentLength = "Content-Length: ";
+  constexpr static const int kLenContentLength = sizeof(kContentLength);
+
+  constexpr static const int kHostnameMaxLen = 64;
+
+  inline bool LineOfHost(const char *line, int len) {
+    return len > kLenHost && strncmp(kHost, line, kLenHost) == 0;
+  }
+
+  inline bool LineOfContentLength(const char *line, int len) {
+    return len > kLenContentLength &&
+           strncmp(kContentLength, line, kLenContentLength) == 0;
+  }
+
+ private:
+  void ParseTcpMessage(Message &msg_rx, Message &msg_tx) {
+    for (; !start_req_body_ && nrx_ + 1 < msg_rx.in_use(); nrx_++) {
+      const char *p = msg_rx.const_data();
+      if (*(p + nrx_) == '\r' && *(p + nrx_ + 1) == '\n') {
+        int len = nrx_ - line_start_;
+        if (LineOfHost(p + line_start_, len)) {
+          len = std::min(len - kLenHost, kHostnameMaxLen - 1);
+          strncpy(hostname_, p + line_start_ + kLenHost, len);
+          std::cout << "+++ " << kHost << hostname_ << std::endl;
+        } else if (LineOfContentLength(p + line_start_, len)) {
+          assert(len - kLenContentLength + 1 > 0);
+          char content_len[len - kLenContentLength + 1] = {0};
+          strncpy(content_len, p + line_start_ + kLenContentLength,
+                  len - kLenContentLength);
+          req_body_len_ = atoi(content_len);
+          std::cout << "+++ " << kContentLength << req_body_len_ << std::endl;
+        } else if (len == 0) {
+          start_req_body_ = req_body_len_ > 0;
+        }
+        line_start_ = nrx_ + 2;
+      }
+    }
+    if (line_start_ + req_body_len_ <= msg_rx.in_use()) {
+      // received complete http request message
+      std::cout << "********** received http request ********" << std::endl;
+      std::cout.write(msg_rx.const_data(), line_start_ + req_body_len_);
+      std::cout << "*****************************************" << std::endl;
+      std::cout.flush();
+
+      msg_rx.drain();
+
+      // connect to host
+      if (strlen(hostname_) > 0) {
+      }
+      // receive data from host
+      // response to client
+    }
+  }
+
+ private:
+  using TcpServerPtr = std::unique_ptr<TcpServer>;
+  TcpServerPtr server_;
+  char hostname_[kHostnameMaxLen] = {0};
+  size_t nrx_{};
+  size_t line_start_{};
+  int req_body_len_{};
+  bool start_req_body_{};
+};
+
+class HttpClient {
+ public:
+  HttpClient(EventCenter *ec) : ec_(ec) {
+    using namespace std::placeholders;
+    client_ = std::make_unique<TcpClient>(ec_);
+    client_->OnMessage(std::bind(&HttpClient::ParseTcpMessage, this, _1, _2));
+  }
+
+  bool Connect(const std::string &addr, int port) {
+    return client_->Connect(addr, port);
+  }
+
+  void SendHttpRequest(const std::string &http_req) {
+    client_->Send(http_req.c_str(), http_req.size());
+  }
+
+ private:
+  void ParseTcpMessage(Message &msg_rx, Message &msg_tx) {
+    (void)msg_tx;
+
+    std::cout.write(msg_rx.const_data(), msg_rx.in_use());
+    std::cout.flush();
+
+    msg_rx.drain();
+  }
+
+ public:
+ private:
+  using TcpClientPtr = std::unique_ptr<TcpClient>;
+  TcpClientPtr client_;
+  EventCenter *ec_;
 };
 
 int main() {
-  // TcpSocket sock;
-  // sock.Connect("www.google.com", 80);
-
-  // TcpSocket server;
-  // server.Listen("*", 8118);
-
   EventCenter ec;
   ec.Build();
 
-  TcpServer server(&ec);
-  if (!server.Listen(8000)) {
+  // HttpProxyServer s(&ec);
+  // if (!s.Start(8000)) {
+  //   return 1;
+  // }
+
+  HttpClient c(&ec);
+  if (!c.Connect("www.google.com", 80)) {
     return 1;
   }
+  std::string http_req =
+      "GET / HTTP/1.1\r\n"
+      "Host: www.google.com\r\n"
+      "\r\n";
+  c.SendHttpRequest(http_req);
 
   if (!ec.Run()) {
     std::cout << "Ooops...." << std::endl;

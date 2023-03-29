@@ -2,10 +2,8 @@
 
 namespace internal {
 class Foo {};
-}
+}  // namespace internal
 
 Bar::Bar() {}
 
-void Bar::Handle(const internal::Foo foo) {
-
-}
+void Bar::Handle(const internal::Foo foo) {}

@@ -1,10 +1,11 @@
-#include <iostream>
-#include <chrono>
 #include <string.h>
+
+#include <chrono>
+#include <iostream>
 
 int main() {
   // delete memory
-  char* buf = new char[4096];
+  char *buf = new char[4096];
 
   buf[0] = 'a';
   buf[4095] = 'z';
@@ -18,7 +19,7 @@ int main() {
   std::cout << dura.count() << "s\n";
 
   // copy memory
-  char* buf2 = new char[4096];
+  char *buf2 = new char[4096];
   t0 = std::chrono::high_resolution_clock::now();
   memcpy(buf2, buf, 4096);
   t1 = std::chrono::high_resolution_clock::now();
