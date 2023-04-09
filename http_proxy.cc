@@ -883,7 +883,8 @@ class HttpProxyServer {
     if (line_start_ + req_body_len_ <= msg_rx.in_use()) {
       // received complete http request message
       std::cout << "********** received http request ********" << std::endl;
-      std::cout.write(msg_rx.const_data(), line_start_ + req_body_len_);
+      std::cout.write(msg_rx.const_data(), msg_rx.in_use());
+      // std::cout.write(msg_rx.const_data(), line_start_ + req_body_len_);
       std::cout << "*****************************************" << std::endl;
       std::cout.flush();
 
@@ -944,20 +945,20 @@ int main() {
   EventCenter ec;
   ec.Build();
 
-  // HttpProxyServer s(&ec);
-  // if (!s.Start(8000)) {
-  //   return 1;
-  // }
-
-  HttpClient c(&ec);
-  if (!c.Connect("www.google.com", 80)) {
+  HttpProxyServer s(&ec);
+  if (!s.Start(8000)) {
     return 1;
   }
-  std::string http_req =
-      "GET / HTTP/1.1\r\n"
-      "Host: www.google.com\r\n"
-      "\r\n";
-  c.SendHttpRequest(http_req);
+
+  // HttpClient c(&ec);
+  // if (!c.Connect("www.google.com", 80)) {
+  //   return 1;
+  // }
+  // std::string http_req =
+  //     "GET / HTTP/1.1\r\n"
+  //     "Host: www.google.com\r\n"
+  //     "\r\n";
+  // c.SendHttpRequest(http_req);
 
   if (!ec.Run()) {
     std::cout << "Ooops...." << std::endl;
