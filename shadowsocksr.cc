@@ -30,32 +30,21 @@
 #include <vector>
 
 namespace Clock {
-  using std_clock = std::chrono::high_resolution_clock;
-  using milliseconds = std::chrono::milliseconds;
-  using time_point = std_clock::time_point;
-  
-  // only for testing
-  milliseconds time_passed_{};
+using std_clock = std::chrono::high_resolution_clock;
+using milliseconds = std::chrono::milliseconds;
+using time_point = std_clock::time_point;
 
-  time_point Now() {
-    return std_clock::now() + time_passed_;
-  }
+// only for testing
+milliseconds time_passed_{};
 
-  bool IsSet(time_point t) {
-    return t.time_since_epoch() != std_clock::time_point::duration::zero();
-  }
+time_point Now() { return std_clock::now() + time_passed_; }
 
-  int Duration(time_point other) {
-    return std::chrono::duration_cast<milliseconds>(Now() - other).count();
-  }
+bool IsSet(time_point t) { return t.time_since_epoch() != std_clock::time_point::duration::zero(); }
 
-  void TimePassed(milliseconds ms) {
-    time_passed_ = ms;
-  }
-};
+int Duration(time_point other) { return std::chrono::duration_cast<milliseconds>(Now() - other).count(); }
 
-
-
+void TimePassed(milliseconds ms) { time_passed_ = ms; }
+};  // namespace Clock
 
 // https://base64.guru/learn/base64-algorithm/decode
 //
@@ -379,9 +368,7 @@ class TimedEventList {
     }
   }
 
-  int RemainingEvents() {
-    return events_.size();
-  }
+  int RemainingEvents() { return events_.size(); }
 
   void Remove(EventSourceId id) {
     auto it = tps_.find(id);
@@ -406,8 +393,8 @@ class TimedEventList {
   }
 
  private:
- std::list<EventSourceId> events_;
- std::unordered_map<EventSourceId, TimedEvent> tps_;
+  std::list<EventSourceId> events_;
+  std::unordered_map<EventSourceId, TimedEvent> tps_;
 };
 
 void Test_TimedEventList() {
@@ -419,9 +406,7 @@ void Test_TimedEventList() {
   Clock::TimePassed(Clock::milliseconds(10));
 
   std::vector<EventSourceId> expired;
-  tel.RemoveExpiredEvent(8, [&](EventSourceId id) {
-    expired.push_back(id);
-  });
+  tel.RemoveExpiredEvent(8, [&](EventSourceId id) { expired.push_back(id); });
   assert(expired.size() == 2);
   assert(expired[0] == EventSourceId(1));
   assert(expired[1] == EventSourceId(2));
@@ -432,16 +417,12 @@ void Test_TimedEventList() {
   tel.Add(1);
   tel.Add(2);
   Clock::TimePassed(Clock::milliseconds(10));
-  tel.RemoveExpiredEvent(16, [&](EventSourceId id) {
-    expired.push_back(id);
-  });
+  tel.RemoveExpiredEvent(16, [&](EventSourceId id) { expired.push_back(id); });
   assert(expired.size() == 0);
 
   Clock::TimePassed(Clock::milliseconds(20));
   tel.Add(3);
-  tel.RemoveExpiredEvent(12, [&](EventSourceId id) {
-    expired.push_back(id);
-  });
+  tel.RemoveExpiredEvent(12, [&](EventSourceId id) { expired.push_back(id); });
   assert(expired.size() == 2);
   assert(expired[0] == EventSourceId(1));
   assert(expired[1] == EventSourceId(2));
@@ -470,7 +451,19 @@ class Eoi {
 };
 Eoi operator|(Event a, Event b) { return Eoi(a) | Eoi(b); }
 
-enum class IoEventStatus { NoMore, MoreToRecv, MoreToSend, AllSent };
+enum class IoEventStatus {
+  // no more incoming data, should shutdown read channel at least
+  NoMoreRecv,
+  // expect more incoming data
+  MoreToRecv,
+  // write channel shutdown or error occured
+  // should shutdown write channel now
+  NoMoreSend,
+  // cannot send all data at once, should wait for writable event
+  MoreToSend,
+  // all data sent, should not wait for writeable event
+  AllSent
+};
 enum class EventKind { kSignal, kListen, kConn };
 
 struct EventSource {
@@ -484,6 +477,137 @@ struct EventSource {
 
   EventSource(EventSourceId id) : id(id), kind(EventKind::kConn) {}
   bool operator==(const EventSource &other) const { return id == other.id; }
+};
+
+class TcpSocket {
+ public:
+  using SocketHandle = int;
+  static const int kBad = -1;
+
+  TcpSocket() {
+    // Create a socket
+    sockfd_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd_ == -1) {
+      std::cerr << "Error creating socket: " << strerror(errno) << std::endl;
+    }
+  }
+
+  TcpSocket(SocketHandle h) : sockfd_(h) {}
+
+ public:
+  operator SocketHandle() { return sockfd_; }
+  operator EventSourceId() { return sockfd_; }
+
+  __attribute__((always_inline)) bool Good() { return sockfd_ != kBad; }
+
+  bool SetNonblocking(bool val = true) { return ::SetNonblocking(sockfd_, val); }
+
+  bool SetSendBufferSize(int n = 16 * 1024) {
+    int result = setsockopt(sockfd_, SOL_SOCKET, SO_SNDBUF, &n, sizeof(n));
+    if (result == -1) {
+      perror("setsockopt(with SO_SNDBUF)");
+      return false;
+    }
+    return true;
+  }
+
+  int GetSendBufferSize() {
+    int actual_sndbuf = 0;
+    socklen_t optlen = sizeof(actual_sndbuf);
+    int rc = getsockopt(sockfd_, SOL_SOCKET, SO_SNDBUF, &actual_sndbuf, &optlen);
+    if (rc < 0) {
+      perror("getsockopt");
+      return -1;
+    }
+    return actual_sndbuf;
+  }
+
+  bool SetReuse() {
+    int reuse = 1;
+    if (setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+      perror("setsockopt(SO_REUSEADDR) failed");
+      return false;
+    }
+    return true;
+  }
+
+  bool Bind(const std::string &ipv4, int port) {
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    // 绑定地址
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = (ipv4 == "*") ? htonl(INADDR_ANY) : inet_addr(ipv4.c_str());
+    addr.sin_port = htons(port);
+    if (bind(sockfd_, (struct sockaddr *)&addr, addr_len) < 0) {
+      perror("bind error");
+      return false;
+    }
+    return true;
+  }
+
+  bool Listen(int queue_size = SOMAXCONN) {
+    if (listen(sockfd_, queue_size) < 0) {
+      perror("listen error");
+      return false;
+    }
+    return true;
+  }
+
+  TcpSocket Accept() {
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    int conn_fd = accept(sockfd_, (struct sockaddr *)&addr, &addr_len);
+    if (conn_fd < 0) {
+      perror("accept error");
+      return TcpSocket(TcpSocket::kBad);
+    }
+    printf("new client connected, fd=%d, address=%s:%d\n", conn_fd, inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
+    return TcpSocket(conn_fd);
+  }
+
+  void Close() { close(sockfd_); }
+
+  void ShutdownReadChannel() { shutdown(sockfd_, SHUT_RD); }
+  void ShutdownWriteChannel() { shutdown(sockfd_, SHUT_WR); }
+  void ShutdownChannel() { shutdown(sockfd_, SHUT_RDWR); }
+
+  IoEventStatus Write(const char *buf, size_t *buf_len) {
+    if (!buf_len || *buf_len <= 0) {
+      return IoEventStatus::AllSent;
+    }
+    size_t n = send(sockfd_, buf, *buf_len, MSG_NOSIGNAL);
+    if (n < 0) {
+      *buf_len = 0;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return IoEventStatus::MoreToSend;
+      } else {
+        perror("send error");
+        return IoEventStatus::NoMoreSend;
+      }
+    }
+    auto s = n < *buf_len ? IoEventStatus::MoreToSend : IoEventStatus::AllSent;
+    *buf_len = n < 0 ? 0 : n;
+    return s;
+  }
+
+  IoEventStatus Read(char *buf, size_t *buf_len) {
+    if (!buf_len || *buf_len <= 0) {
+      return IoEventStatus::MoreToRecv;
+    }
+    ssize_t n = recv(sockfd_, buf, *buf_len, 0);
+    if (n <= 0) {
+      *buf_len = 0;
+      if (n < 0) perror("recv error");
+      return IoEventStatus::NoMoreRecv;
+    }
+
+    *buf_len = n;
+    return IoEventStatus::MoreToRecv;
+  }
+
+ private:
+  SocketHandle sockfd_;
 };
 
 template <typename T>
@@ -576,9 +700,7 @@ class EventCenter {
     return true;
   }
 
-  void SetTimeout(int timeout_ms) {
-    timeout_ms_ = timeout_ms;
-  }
+  void SetTimeout(int timeout_ms) { timeout_ms_ = timeout_ms; }
 
   using OnCloseHandle = std::function<void(uint32_t)>;
   void OnClose(OnCloseHandle func) { on_close_ = func; }
@@ -590,24 +712,56 @@ class EventCenter {
     events_.Remove(id);
   }
 
-  bool HandleEventStatus(const IoEventStatus &status, EventSource *es) {
+  [[nodiscard]] bool HandleEventStatus(const IoEventStatus &status, EventSource *es) {
     switch (status) {
-      case IoEventStatus::NoMore: {
-        std::cout << "fd " << es->id << " no more data" << std::endl;
-        Clean(es->id);
-        return false;
+      case IoEventStatus::NoMoreRecv: {
+        std::cout << "fd " << es->id << " no more incoming data, ";
+        // if is in writing state, only shutdown read channel;
+        if (es->eoi & Event::Write) {
+          std::cout << "shutdown read channel" << std::endl;
+          TcpSocket(es->id).ShutdownReadChannel();
+          // only care writeable event now
+          es->eoi = Event::Write;
+          Modify(es);
+        } else {
+          std::cout << "clean resource" << std::endl;
+          Clean(es->id);
+          // event cleaned, do no handle other events
+          return false;
+        }
+      }
+      case IoEventStatus::NoMoreSend: {
+        if (es->eoi & Event::Read) {
+          std::cout << "fd " << es->id << ", no more send, shutdown write channel" << std::endl;
+          TcpSocket(es->id).ShutdownWriteChannel();
+          // only care read event now
+          es->eoi = Event::Read;
+          Modify(es);
+        } else {
+          std::cout << "fd " << es->id << ", no more send, clean resource" << std::endl;
+          Clean(es->id);
+          // event cleaned, do no handle other events
+          return false;
+        }
+        break;
       }
       case IoEventStatus::MoreToSend: {
         if (!(es->eoi & Event::Write)) {
-          std::cout << "******install write handler" << std::endl;
+          std::cout << "****** fd " << es->id << " install write handler" << std::endl;
           es->eoi |= Event::Write;
           Modify(es);
         }
         break;
       }
       case IoEventStatus::AllSent: {
-        if (es->eoi & Event::Write) {
-          std::cout << "******remove write handler" << std::endl;
+        // if read channel has shutdown and all data sent, clean resource now
+        if (!(es->eoi & Event::Read)) {
+          std::cout << "fd " << es->id << " all data sent, clean resource" << std::endl;
+          Clean(es->id);
+          // event cleaned, do no handle other events
+          return false;
+        } else {
+          std::cout << "****** fd " << es->id << " remove write handler" << std::endl;
           es->eoi = Event::Read;
           Modify(es);
         }
@@ -623,9 +777,7 @@ class EventCenter {
     return true;
   }
 
-  bool EnableTimeout() {
-    return timeout_ms_ != kNoTimeout;
-  }
+  bool EnableTimeout() { return timeout_ms_ != kNoTimeout; }
 
   bool Run() {
     pending_ = true;
@@ -659,20 +811,22 @@ class EventCenter {
         if (es->kind == EventKind::kConn) timed_events_.Add(es->id);
 
         if (es->eoi & readable && es->read_handler) {
+          std::cout << "fd " << es->id << " readable..." << std::endl;
           IoEventStatus s = es->read_handler(es->id, es->obj);
           if (!HandleEventStatus(s, es)) continue;
         }
 
         if (es->eoi & writable && es->write_handler) {
+          std::cout << "fd " << es->id << " writeable..." << std::endl;
           IoEventStatus s = es->write_handler(es->id, es->obj);
-          HandleEventStatus(s, es);
+          if (!HandleEventStatus(s, es)) continue;
         }
 
         if (!readable && !writable) {
           std::cout << "unnecessary wake up" << std::endl;
         }
       }
-      
+
       // process expired clients
       if (EnableTimeout()) {
         timed_events_.RemoveExpiredEvent(timeout_ms_, [&](EventSourceId id) {
@@ -720,7 +874,7 @@ class EventCenter {
 
   static IoEventStatus QuitWrapper(EventSourceId, void *obj) {
     static_cast<EventCenter *>(obj)->Quit();
-    return IoEventStatus::NoMore;
+    return IoEventStatus::NoMoreRecv;
   }
 
   void Quit() {
@@ -744,29 +898,37 @@ class Message {
  public:
   Message() { buf_.resize(8192); }
 
-  void Insert(const char *buf, size_t len) {
+  int Insert(const char *buf, size_t len) {
     buf_.assign(buf, buf + len);
     in_use_ = len;
+    return len;
   }
 
-  void Append(const char *buf, size_t len) {
+  int Append(const char *buf, size_t len) {
     if (in_use_ + len > buf_.size()) {
       buf_.resize(std::max(in_use_ + len, buf_.size() * 2));
     }
     memcpy(data(), buf, len);
     in_use_ += len;
+    return len;
   }
 
   const char *to_send() const { return buf_.data() + n_sent_; }
   size_t n_to_send() const { return in_use_ - n_sent_; }
   void add_n_sent(int n) { n_sent_ += n; }
 
-  const char *const_data() const { return buf_.data(); }
-
-  char *data() { return buf_.data() + in_use_; }
+  // 已经接收尚未读取的消息
+  const char *not_read() const { return buf_.data() + n_read_; }
+  size_t n_to_read() const { return in_use_ - n_read_; }
+  void add_n_read(int n) { n_read_ += n; }
+  // 已经接收的消息
+  const char *recvd() const { return buf_.data(); }
 
   size_t in_use() const { return in_use_; }
+  void add_in_use(int n) { in_use_ += n; }
 
+  // TODO: rename
+  char *data() { return buf_.data() + in_use_; }
   size_t available(bool expand = false) {
     auto ans = buf_.size() - in_use_;
     if (ans == 0 && expand) {
@@ -776,157 +938,22 @@ class Message {
     return ans;
   }
 
-  void add_in_use(int n) { in_use_ += n; }
-
-  void drain(std::string &s) {
-    s.assign(const_data(), const_data() + in_use());
-    in_use_ = 0;
-  }
-
   void drain() { in_use_ = 0; }
 
  private:
   size_t in_use_{};
   size_t n_sent_{};
+  size_t n_read_{};
   std::vector<char> buf_;
 };
 
 using MsgParseFn = std::function<void(Message &, Message &)>;
 
-class TcpSocket {
- public:
-  using SocketHandle = int;
-  static const int kBad = -1;
-
-  TcpSocket() {
-    // Create a socket
-    sockfd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd_ == -1) {
-      std::cerr << "Error creating socket: " << strerror(errno) << std::endl;
-    }
-  }
-
-  TcpSocket(SocketHandle h) : sockfd_(h) {}
-
- public:
-  operator SocketHandle() { return sockfd_; }
-  // operator TcpChannelId() { return sockfd_; }
-  operator EventSourceId() { return sockfd_; }
-
-  __attribute__((always_inline)) bool Good() { return sockfd_ != kBad; }
-
-  bool SetNonblocking(bool val = true) { return ::SetNonblocking(sockfd_, val); }
-
-  bool SetSendBufferSize(int n = 16 * 1024) {
-    int result = setsockopt(sockfd_, SOL_SOCKET, SO_SNDBUF, &n, sizeof(n));
-    if (result == -1) {
-      perror("setsockopt(with SO_SNDBUF)");
-      return false;
-    }
-    return true;
-  }
-
-  int GetSendBufferSize() {
-    int actual_sndbuf = 0;
-    socklen_t optlen = sizeof(actual_sndbuf);
-    int rc = getsockopt(sockfd_, SOL_SOCKET, SO_SNDBUF, &actual_sndbuf, &optlen);
-    if (rc < 0) {
-      perror("getsockopt");
-      return -1;
-    }
-    return actual_sndbuf;
-  }
-
-  bool SetReuse() {
-    int reuse = 1;
-    if (setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-      perror("setsockopt(SO_REUSEADDR) failed");
-      return false;
-    }
-    return true;
-  }
-
-  bool Bind(const std::string &ipv4, int port) {
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(addr);
-    // 绑定地址
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = (ipv4 == "*") ? htonl(INADDR_ANY) : inet_addr(ipv4.c_str());
-    addr.sin_port = htons(port);
-    if (bind(sockfd_, (struct sockaddr *)&addr, addr_len) < 0) {
-      perror("bind error");
-      return false;
-    }
-    return true;
-  }
-
-  bool Listen(int queue_size = SOMAXCONN) {
-    if (listen(sockfd_, queue_size) < 0) {
-      perror("listen error");
-      return false;
-    }
-    return true;
-  }
-
-  TcpSocket Accept() {
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(addr);
-    int conn_fd = accept(sockfd_, (struct sockaddr *)&addr, &addr_len);
-    if (conn_fd < 0) {
-      perror("accept error");
-      return TcpSocket(TcpSocket::kBad);
-    }
-    printf("new client connected, fd=%d, address=%s:%d\n", conn_fd, inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
-    return TcpSocket(conn_fd);
-  }
-
-  void Close() {
-    close(sockfd_);
-  }
-
-  IoEventStatus Write(const char *buf, size_t *buf_len) {
-    if (!buf_len || *buf_len <= 0) {
-      return IoEventStatus::NoMore;
-    }
-    int n = send(sockfd_, buf, *buf_len, MSG_NOSIGNAL);
-    if (n < 0) {
-      *buf_len = 0;
-      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EPIPE) {
-        return IoEventStatus::MoreToSend;
-      } else {
-        perror("send error");
-        return IoEventStatus::NoMore;
-      }
-    }
-    auto s = n < *buf_len ? IoEventStatus::MoreToSend : IoEventStatus::AllSent;
-    *buf_len = n < 0 ? 0 : n;
-    return s;
-  }
-
-  IoEventStatus Read(char *buf, size_t *buf_len) {
-    if (!buf_len || *buf_len <= 0) {
-      return IoEventStatus::MoreToRecv;
-    }
-    ssize_t n = recv(sockfd_, buf, *buf_len, 0);
-    if (n <= 0) {
-      *buf_len = 0;
-      if (n < 0) perror("recv error");
-      return IoEventStatus::NoMore;
-    }
-
-    *buf_len = n;
-    return IoEventStatus::MoreToRecv;
-  }
-
- private:
-  SocketHandle sockfd_;
-};
-
 class TcpChannel {
  public:
   TcpChannel(TcpSocket s) : expand_rx_buffer_(false), sock_(s), tx_status_(IoEventStatus::AllSent) {}
 
+  // 通过自定义的 MsgParseFn 实现各种协议的处理
   void SetMsgParser(MsgParseFn fn) { parse_fn_ = fn; }
   void SetExpandRxBuffer(bool expand) { expand_rx_buffer_ = expand; }
 
@@ -942,7 +969,10 @@ class TcpChannel {
   // level-trigger
   IoEventStatus Recv() {
     size_t n = msg_rx_.available(expand_rx_buffer_);
-    sock_.Read(msg_rx_.data(), &n);
+    auto s = sock_.Read(msg_rx_.data(), &n);
+    if (s == IoEventStatus::NoMoreRecv) {
+      return s;
+    }
     msg_rx_.add_in_use(n);
     std::cout << n << " bytes received" << std::endl;
 
@@ -1083,7 +1113,8 @@ class TcpServer {
 
   void RemoveClient(TcpSocket id) {
     id.Close();
-    clients_.Remove(id); }
+    clients_.Remove(id);
+  }
 
   void Accept(EventSourceId) {
     TcpSocket client = sock_lsn_.Accept();
@@ -1253,6 +1284,29 @@ class TcpClient {
   MsgParseFn parse_fn_;
 };
 
+void RunTcpServer() {
+  TcpServer server;
+  TcpServerSetting ss;
+  ss.port = 8000;
+  ss.close_idle_client_in_ms = 5000;
+  server.SetSetting(ss);
+  server.Run();
+}
+
+void EchoProtocol(Message &msg_rx, Message &msg_tx) {
+  int n = msg_tx.Append(msg_rx.not_read(), msg_rx.n_to_read());
+  msg_rx.add_n_read(n);
+}
+
+void RunEchoServer() {
+  TcpServer server;
+  TcpServerSetting ss;
+  ss.port = 8000;
+  ss.parse_fn = MsgParseFn(EchoProtocol);
+  server.SetSetting(ss);
+  server.Run();
+}
+
 int main() {
   // EventCenter ec;
   // ec.Build();
@@ -1276,12 +1330,7 @@ int main() {
   //   std::cout << "Ooops...." << std::endl;
   // }
 
-  TcpServer server;
-  TcpServerSetting ss;
-  ss.port = 8000;
-  ss.close_idle_client_in_ms = 5000;
-  server.SetSetting(ss);
-  server.Run();
+  RunEchoServer();
 
   // Test_B64Decode();
   // Test_Split();
