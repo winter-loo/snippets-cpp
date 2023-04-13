@@ -25,6 +25,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -37,13 +38,21 @@ using time_point = std_clock::time_point;
 // only for testing
 milliseconds time_passed_{};
 
-time_point Now() { return std_clock::now() + time_passed_; }
+time_point Now() {
+  return std_clock::now() + time_passed_;
+}
 
-bool IsSet(time_point t) { return t.time_since_epoch() != std_clock::time_point::duration::zero(); }
+bool IsSet(time_point t) {
+  return t.time_since_epoch() != std_clock::time_point::duration::zero();
+}
 
-int Duration(time_point other) { return std::chrono::duration_cast<milliseconds>(Now() - other).count(); }
+int Duration(time_point other) {
+  return std::chrono::duration_cast<milliseconds>(Now() - other).count();
+}
 
-void TimePassed(milliseconds ms) { time_passed_ = ms; }
+void TimePassed(milliseconds ms) {
+  time_passed_ = ms;
+}
 };  // namespace Clock
 
 // https://base64.guru/learn/base64-algorithm/decode
@@ -56,7 +65,7 @@ void TimePassed(milliseconds ms) { time_passed_ = ms; }
 // https://github.com/ReneNyffenegger/cpp-base64/blob/master/base64.cpp#L163
 // converting six-bit bytes into eight-bit bytes.
 //
-std::string B64Decode(const std::string &encoded) {
+std::string B64Decode(const std::string& encoded) {
   auto IndexOf = [&](char ch) {
     if (ch >= 'A' && ch <= 'Z')
       return ch - 'A';
@@ -81,22 +90,26 @@ std::string B64Decode(const std::string &encoded) {
 
   while (pos < encoded_len) {
     i1 = IndexOf(encoded[pos]);
-    if (i1 == -1) return {};
+    if (i1 == -1)
+      return {};
     if (pos + 1 < encoded_len) {
       i2 = IndexOf(encoded[pos + 1]);
-      if (i2 == -1) return {};
+      if (i2 == -1)
+        return {};
       c = (i1 << 2) + ((i2 & 0x30) >> 4);
       decoded.push_back(c);
 
       if (pos + 2 < encoded_len) {
         i3 = IndexOf(encoded[pos + 2]);
-        if (i3 == -1) return {};
+        if (i3 == -1)
+          return {};
         c = ((i2 & 0x0f) << 4) + ((i3 & 0x3c) >> 2);
         decoded.push_back(c);
 
         if (pos + 3 < encoded_len) {
           i4 = IndexOf(encoded[pos + 3]);
-          if (i4 == -1) return {};
+          if (i4 == -1)
+            return {};
           c = ((i3 & 0x03) << 6) + i4;
           decoded.push_back(c);
         }
@@ -109,7 +122,7 @@ std::string B64Decode(const std::string &encoded) {
 
 void Test_B64Decode() {
   int test_case = 0;
-  auto TestOutput = [&](const std::string &answer, const std::string &expected) {
+  auto TestOutput = [&](const std::string& answer, const std::string& expected) {
     std::cout << "case " << ++test_case << ": ";
     if (answer != expected) {
       std::cerr << "FAILED" << std::endl;
@@ -157,11 +170,12 @@ struct SsrNode {
   std::string group;
 };
 
-void Split(const std::string &str, const std::string &delimiter, std::vector<std::string> &fields) {
+void Split(const std::string& str, const std::string& delimiter, std::vector<std::string>& fields) {
   size_t pos = 0, ppos = 0;
   while (true) {
     pos = str.find(delimiter, pos);
-    if (pos == std::string::npos) break;
+    if (pos == std::string::npos)
+      break;
     fields.emplace_back(str.substr(ppos, pos - ppos));
     pos = pos + 1;
     ppos = pos;
@@ -192,7 +206,7 @@ void Test_Split() {
   assert(fields[1] == "456");
 }
 
-bool ParseSsrURL(const std::string &ssr_url, SsrNode &node) {
+bool ParseSsrURL(const std::string& ssr_url, SsrNode& node) {
   const static char kSsrUrlPrefix[] = "ssr://";
   const size_t kPrefixLen = sizeof(kSsrUrlPrefix) - 1;
   if (ssr_url.size() < kPrefixLen + 1 || 0 != ssr_url.find(kSsrUrlPrefix)) {
@@ -208,7 +222,8 @@ bool ParseSsrURL(const std::string &ssr_url, SsrNode &node) {
 
   std::vector<std::string> fields;
   Split(decoded, ":", fields);
-  if (fields.size() < 5) return false;
+  if (fields.size() < 5)
+    return false;
   node.address = fields[0];
   node.port = std::stoi(fields[1]);
   node.protocol = fields[2];
@@ -217,15 +232,17 @@ bool ParseSsrURL(const std::string &ssr_url, SsrNode &node) {
   std::string last_field = fields[5];
   fields.clear();
   Split(last_field, "/?", fields);
-  if (fields.size() < 2) return false;
+  if (fields.size() < 2)
+    return false;
   node.password = B64Decode(fields[0]);
   last_field = fields[1];
   fields.clear();
   Split(last_field, "&", fields);
   std::vector<std::string> kvs;
-  for (auto &fld : fields) {
+  for (auto& fld : fields) {
     Split(fld, "=", kvs);
-    if (kvs.size() != 2) continue;
+    if (kvs.size() != 2)
+      continue;
     if (kvs[0] == "obfsparam") {
       node.obfs_param = kvs[1];
     } else if (kvs[0] == "protoparam") {
@@ -272,7 +289,7 @@ static bool SetNonblocking(int fd, bool val = true) {
 
 class DnsResolver {
  public:
-  bool Resolve(const std::string &hostname) {
+  bool Resolve(const std::string& hostname) {
     struct addrinfo hints, *result, *rp;
 
     // Set up hints structure for getaddrinfo()
@@ -291,10 +308,13 @@ class DnsResolver {
 
     // Iterate through the list of IP addresses returned by getaddrinfo()
     for (rp = result; rp != NULL; rp = rp->ai_next) {
-      if (rp->ai_family != AF_INET) continue;          // Only need IPv4 address
-      if ((rp->ai_flags & AI_PASSIVE) != 0) continue;  // Skip wildcard address
-      auto addr = ((struct sockaddr_in *)(rp->ai_addr))->sin_addr;
-      if (addr.s_addr == 0) continue;  // Skip wildcard address
+      if (rp->ai_family != AF_INET)
+        continue;  // Only need IPv4 address
+      if ((rp->ai_flags & AI_PASSIVE) != 0)
+        continue;  // Skip wildcard address
+      auto addr = ((struct sockaddr_in*)(rp->ai_addr))->sin_addr;
+      if (addr.s_addr == 0)
+        continue;  // Skip wildcard address
       addresses_.push_back(inet_ntoa(addr));
     }
     std::sort(addresses_.begin(), addresses_.end());
@@ -343,7 +363,7 @@ class EventSourceId {
 namespace std {
 template <>
 struct hash<EventSourceId> {
-  size_t operator()(const EventSourceId &id) const { return hash<uint32_t>()(id); }
+  size_t operator()(const EventSourceId& id) const { return hash<uint32_t>()(id); }
 };
 }  // namespace std
 
@@ -441,7 +461,7 @@ class Eoi {
   operator uint32_t() const { return e_; }
   Eoi operator&(Event e) const { return e_ & Eoi(e).e_; }
   Eoi operator|(Event e) const { return e_ | (uint8_t)e; }
-  Eoi &operator|=(Event e) {
+  Eoi& operator|=(Event e) {
     e_ = (uint8_t)e | e_;
     return *this;
   }
@@ -449,7 +469,9 @@ class Eoi {
  private:
   uint8_t e_;
 };
-Eoi operator|(Event a, Event b) { return Eoi(a) | Eoi(b); }
+Eoi operator|(Event a, Event b) {
+  return Eoi(a) | Eoi(b);
+}
 
 enum class IoEventStatus {
   // no more incoming data, should shutdown read channel at least
@@ -471,12 +493,12 @@ struct EventSource {
   EventKind kind;
   // events of interested
   Eoi eoi;
-  IoEventStatus (*read_handler)(EventSourceId, void *);
-  IoEventStatus (*write_handler)(EventSourceId, void *);
-  void *obj;
+  IoEventStatus (*read_handler)(EventSourceId, void*);
+  IoEventStatus (*write_handler)(EventSourceId, void*);
+  void* obj;
 
   EventSource(EventSourceId id) : id(id), kind(EventKind::kConn) {}
-  bool operator==(const EventSource &other) const { return id == other.id; }
+  bool operator==(const EventSource& other) const { return id == other.id; }
 };
 
 class TcpSocket {
@@ -531,7 +553,7 @@ class TcpSocket {
     return true;
   }
 
-  bool Bind(const std::string &ipv4, int port) {
+  bool Bind(const std::string& ipv4, int port) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
     // 绑定地址
@@ -539,7 +561,7 @@ class TcpSocket {
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = (ipv4 == "*") ? htonl(INADDR_ANY) : inet_addr(ipv4.c_str());
     addr.sin_port = htons(port);
-    if (bind(sockfd_, (struct sockaddr *)&addr, addr_len) < 0) {
+    if (bind(sockfd_, (struct sockaddr*)&addr, addr_len) < 0) {
       perror("bind error");
       return false;
     }
@@ -557,7 +579,7 @@ class TcpSocket {
   TcpSocket Accept() {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
-    int conn_fd = accept(sockfd_, (struct sockaddr *)&addr, &addr_len);
+    int conn_fd = accept(sockfd_, (struct sockaddr*)&addr, &addr_len);
     if (conn_fd < 0) {
       perror("accept error");
       return TcpSocket(TcpSocket::kBad);
@@ -572,7 +594,7 @@ class TcpSocket {
   void ShutdownWriteChannel() { shutdown(sockfd_, SHUT_WR); }
   void ShutdownChannel() { shutdown(sockfd_, SHUT_RDWR); }
 
-  IoEventStatus Write(const char *buf, size_t *buf_len) {
+  IoEventStatus Write(const char* buf, size_t* buf_len) {
     if (!buf_len || *buf_len <= 0) {
       return IoEventStatus::AllSent;
     }
@@ -591,14 +613,15 @@ class TcpSocket {
     return s;
   }
 
-  IoEventStatus Read(char *buf, size_t *buf_len) {
+  IoEventStatus Read(char* buf, size_t* buf_len) {
     if (!buf_len || *buf_len <= 0) {
       return IoEventStatus::MoreToRecv;
     }
     ssize_t n = recv(sockfd_, buf, *buf_len, 0);
     if (n <= 0) {
       *buf_len = 0;
-      if (n < 0) perror("recv error");
+      if (n < 0)
+        perror("recv error");
       return IoEventStatus::NoMoreRecv;
     }
 
@@ -623,7 +646,7 @@ class FastList {
     }
   }
 
-  T *Add(uint32_t id) {
+  T* Add(uint32_t id) {
     auto e = new T(id);
     auto it = elements_.insert(elements_.end(), e);
     lut_.insert({id, it});
@@ -633,14 +656,14 @@ class FastList {
   void Remove(uint32_t id) {
     auto it = lut_.find(id);
     if (it != lut_.end()) {
-      T *p = *it->second;
+      T* p = *it->second;
       elements_.erase(it->second);
       lut_.erase(it);
       delete p;
     }
   }
 
-  T *Find(uint32_t id) {
+  T* Find(uint32_t id) {
     auto it = lut_.find(id);
     if (it != lut_.end()) {
       return *it->second;
@@ -649,7 +672,7 @@ class FastList {
   }
 
  private:
-  using PointerList = std::list<T *>;
+  using PointerList = std::list<T*>;
   using LookupTable = std::unordered_map<uint32_t, typename PointerList::iterator>;
   PointerList elements_;
   LookupTable lut_;
@@ -666,10 +689,10 @@ class EventCenter {
     good_ = true;
   }
   bool good() { return good_; }
-  EventSource *CreateEvent(EventSourceId id) { return events_.Add(id); }
-  EventSource *Find(EventSourceId id) { return events_.Find(id); }
+  EventSource* CreateEvent(EventSourceId id) { return events_.Add(id); }
+  EventSource* Find(EventSourceId id) { return events_.Find(id); }
 
-  bool Add(EventSource *es) {
+  bool Add(EventSource* es) {
     struct epoll_event ev;
     ev.events = es->eoi;
     ev.data.ptr = es;
@@ -682,7 +705,7 @@ class EventCenter {
     }
     return true;
   }
-  bool Modify(EventSource *es) {
+  bool Modify(EventSource* es) {
     struct epoll_event ev;
     ev.events = es->eoi;
     ev.data.ptr = es;
@@ -708,11 +731,12 @@ class EventCenter {
   void Clean(EventSourceId id) {
     std::cout << "clean resource with event " << id << std::endl;
     Remove(id);
-    if (on_close_) on_close_(id);
+    if (on_close_)
+      on_close_(id);
     events_.Remove(id);
   }
 
-  [[nodiscard]] bool HandleEventStatus(const IoEventStatus &status, EventSource *es) {
+  [[nodiscard]] bool HandleEventStatus(const IoEventStatus& status, EventSource* es) {
     switch (status) {
       case IoEventStatus::NoMoreRecv: {
         std::cout << "fd " << es->id << " no more incoming data, ";
@@ -795,7 +819,8 @@ class EventCenter {
         last_wake_up_time_ = Clock::Now();
       }
       if (nfds < 0) {
-        if (errno == EINTR) continue;
+        if (errno == EINTR)
+          continue;
         perror("epoll_wait error");
         return false;
       }
@@ -803,23 +828,26 @@ class EventCenter {
       for (int i = 0; i < nfds; i++) {
         // TODO: handle EPOLLHUP, EPOLLERR
         int flags = events[i].events;
-        EventSource *es = static_cast<EventSource *>(events[i].data.ptr);
+        EventSource* es = static_cast<EventSource*>(events[i].data.ptr);
         int readable = flags & EPOLLIN;
         int writable = flags & EPOLLOUT;
 
         // update time with triggering event
-        if (es->kind == EventKind::kConn) timed_events_.Add(es->id);
+        if (es->kind == EventKind::kConn)
+          timed_events_.Add(es->id);
 
         if (es->eoi & readable && es->read_handler) {
           std::cout << "fd " << es->id << " readable..." << std::endl;
           IoEventStatus s = es->read_handler(es->id, es->obj);
-          if (!HandleEventStatus(s, es)) continue;
+          if (!HandleEventStatus(s, es))
+            continue;
         }
 
         if (es->eoi & writable && es->write_handler) {
           std::cout << "fd " << es->id << " writeable..." << std::endl;
           IoEventStatus s = es->write_handler(es->id, es->obj);
-          if (!HandleEventStatus(s, es)) continue;
+          if (!HandleEventStatus(s, es))
+            continue;
         }
 
         if (!readable && !writable) {
@@ -872,8 +900,8 @@ class EventCenter {
     Add(es);
   }
 
-  static IoEventStatus QuitWrapper(EventSourceId, void *obj) {
-    static_cast<EventCenter *>(obj)->Quit();
+  static IoEventStatus QuitWrapper(EventSourceId, void* obj) {
+    static_cast<EventCenter*>(obj)->Quit();
     return IoEventStatus::NoMoreRecv;
   }
 
@@ -898,13 +926,13 @@ class Message {
  public:
   Message() { buf_.resize(8192); }
 
-  int Insert(const char *buf, size_t len) {
+  int Insert(const char* buf, size_t len) {
     buf_.assign(buf, buf + len);
     in_use_ = len;
     return len;
   }
 
-  int Append(const char *buf, size_t len) {
+  int Append(const char* buf, size_t len) {
     if (in_use_ + len > buf_.size()) {
       buf_.resize(std::max(in_use_ + len, buf_.size() * 2));
     }
@@ -913,22 +941,23 @@ class Message {
     return len;
   }
 
-  const char *to_send() const { return buf_.data() + n_sent_; }
+  const char* to_send() const { return buf_.data() + n_sent_; }
   size_t n_to_send() const { return in_use_ - n_sent_; }
   void add_n_sent(int n) { n_sent_ += n; }
 
   // 已经接收尚未读取的消息
-  const char *not_read() const { return buf_.data() + n_read_; }
+  const char* not_read() const { return buf_.data() + n_read_; }
   size_t n_to_read() const { return in_use_ - n_read_; }
+  size_t n_read() const { return n_read_; }
   void add_n_read(int n) { n_read_ += n; }
   // 已经接收的消息
-  const char *recvd() const { return buf_.data(); }
+  const char* recvd() const { return buf_.data(); }
 
   size_t in_use() const { return in_use_; }
   void add_in_use(int n) { in_use_ += n; }
 
   // TODO: rename
-  char *data() { return buf_.data() + in_use_; }
+  char* data() { return buf_.data() + in_use_; }
   size_t available(bool expand = false) {
     auto ans = buf_.size() - in_use_;
     if (ans == 0 && expand) {
@@ -938,7 +967,11 @@ class Message {
     return ans;
   }
 
-  void drain() { in_use_ = 0; }
+  void drain() {
+    in_use_ = 0;
+    n_sent_ = 0;
+    n_read_ = 0;
+  }
 
  private:
   size_t in_use_{};
@@ -947,7 +980,7 @@ class Message {
   std::vector<char> buf_;
 };
 
-using MsgParseFn = std::function<void(Message &, Message &)>;
+using MsgParseFn = std::function<void(Message&, Message&)>;
 
 class TcpChannel {
  public:
@@ -976,7 +1009,8 @@ class TcpChannel {
     msg_rx_.add_in_use(n);
     std::cout << n << " bytes received" << std::endl;
 
-    if (parse_fn_) parse_fn_(msg_rx_, msg_tx_);
+    if (parse_fn_)
+      parse_fn_(msg_rx_, msg_tx_);
 
     // std::cout.write(msg_rx_.const_data(), msg_rx_.in_use());
     // std::cout.flush();
@@ -987,7 +1021,8 @@ class TcpChannel {
     //   msg_tx_.Append(msg_rx_.const_data(), msg_rx_.in_use());
     // }
 
-    if (msg_tx_.n_to_send() > 0 && tx_status_ != IoEventStatus::MoreToSend) Send();
+    if (msg_tx_.n_to_send() > 0 && tx_status_ != IoEventStatus::MoreToSend)
+      Send();
 
     // std::ofstream ofs("hello.cc", std::ios::app);
     // ofs.write(msg_rx_.const_data(), msg_rx_.in_use());
@@ -998,11 +1033,11 @@ class TcpChannel {
     return tx_status_;
   }
 
-  Message &msg_tx() { return msg_tx_; }
+  Message& msg_tx() { return msg_tx_; }
 
-  static IoEventStatus RecvWrapper(EventSourceId, void *obj) { return static_cast<TcpChannel *>(obj)->Recv(); }
+  static IoEventStatus RecvWrapper(EventSourceId, void* obj) { return static_cast<TcpChannel*>(obj)->Recv(); }
 
-  static IoEventStatus SendWrapper(EventSourceId, void *obj) { return static_cast<TcpChannel *>(obj)->Send(); }
+  static IoEventStatus SendWrapper(EventSourceId, void* obj) { return static_cast<TcpChannel*>(obj)->Send(); }
 
  private:
   bool expand_rx_buffer_;
@@ -1020,10 +1055,11 @@ struct SettingItem {
 
   SettingItem() : enabled(false) {}
   SettingItem(T value) : enabled(true), value(value) {}
-  T &get() { return value; }
+  T& get() { return value; }
 
-  void operator=(const SettingItem<T> &other) {
-    if (!other.enabled || this == &other) return;
+  void operator=(const SettingItem<T>& other) {
+    if (!other.enabled || this == &other)
+      return;
     this->enabled = other.enabled;
     this->value = other.value;
   }
@@ -1040,8 +1076,9 @@ struct TcpServerSetting {
   SettingItem<EventCenterPtr> ec;
   SettingItem<MsgParseFn> parse_fn;
 
-  void operator=(const TcpServerSetting &other) {
-    if (&other == this) return;
+  void operator=(const TcpServerSetting& other) {
+    if (&other == this)
+      return;
     this->address = other.address;
     this->port = other.port;
     this->nonblocking = other.nonblocking;
@@ -1082,7 +1119,7 @@ class TcpServer {
   }
 
  private:
-  bool Listen(int port, const std::string &address = "*") {
+  bool Listen(int port, const std::string& address = "*") {
     if (!sock_lsn_.Good()) {
       return false;
     }
@@ -1106,8 +1143,8 @@ class TcpServer {
     return true;
   }
 
-  static IoEventStatus AcceptWrapper(EventSourceId id, void *obj) {
-    static_cast<TcpServer *>(obj)->Accept(id);
+  static IoEventStatus AcceptWrapper(EventSourceId id, void* obj) {
+    static_cast<TcpServer*>(obj)->Accept(id);
     return IoEventStatus::MoreToRecv;
   }
 
@@ -1185,12 +1222,14 @@ bool IsDotDecimalFormat(std::string ipAddress) {
 
 class TcpClient {
  public:
-  TcpClient(EventCenter *ec) : ec_(ec) {
-    if (sock_.Good()) sock_.SetNonblocking();
+  TcpClient(EventCenter* ec) : ec_(ec) {
+    if (sock_.Good())
+      sock_.SetNonblocking();
   }
 
-  bool Connect(const std::string &addr, int port) {
-    if (!sock_.Good()) return false;
+  bool Connect(const std::string& addr, int port) {
+    if (!sock_.Good())
+      return false;
     std::string ip = addr;
     if (!IsDotDecimalFormat(addr)) {
       if (!dns_.Resolve(addr)) {
@@ -1210,7 +1249,7 @@ class TcpClient {
     server_addr_struct.sin_family = AF_INET;
     server_addr_struct.sin_addr.s_addr = inet_addr(ip.c_str());
     server_addr_struct.sin_port = htons(port);
-    if (connect(sock_, (struct sockaddr *)&server_addr_struct, sizeof(server_addr_struct)) == -1) {
+    if (connect(sock_, (struct sockaddr*)&server_addr_struct, sizeof(server_addr_struct)) == -1) {
       if (errno != EINPROGRESS) {
         std::cerr << "Error connecting to server: " << strerror(errno) << std::endl;
         return false;
@@ -1219,9 +1258,9 @@ class TcpClient {
     return true;
   }
 
-  static IoEventStatus OnConnectWrapper(EventSourceId id, void *obj) {
+  static IoEventStatus OnConnectWrapper(EventSourceId id, void* obj) {
     (void)id;
-    static_cast<TcpClient *>(obj)->OnConnected();
+    static_cast<TcpClient*>(obj)->OnConnected();
     return IoEventStatus::MoreToRecv;
   }
 
@@ -1257,12 +1296,12 @@ class TcpClient {
 
   void OnMessage(MsgParseFn parse_fn) { parse_fn_ = parse_fn; }
 
-  void Send(const char *data, size_t len) {
+  void Send(const char* data, size_t len) {
     if (chan_ == nullptr) {
       chan_ = new TcpChannel(sock_);
       chan_->SetMsgParser(parse_fn_);
     }
-    Message &msg_tx = chan_->msg_tx();
+    Message& msg_tx = chan_->msg_tx();
     msg_tx.Append(data, len);
 
     // check whether connection established
@@ -1277,10 +1316,10 @@ class TcpClient {
 
  private:
   DnsResolver dns_;
-  EventCenter *ec_;
-  EventSource *es_;
+  EventCenter* ec_;
+  EventSource* es_;
   TcpSocket sock_;
-  TcpChannel *chan_;
+  TcpChannel* chan_;
   MsgParseFn parse_fn_;
 };
 
@@ -1293,7 +1332,7 @@ void RunTcpServer() {
   server.Run();
 }
 
-void EchoProtocol(Message &msg_rx, Message &msg_tx) {
+void EchoProtocol(Message& msg_rx, Message& msg_tx) {
   int n = msg_tx.Append(msg_rx.not_read(), msg_rx.n_to_read());
   msg_rx.add_n_read(n);
 }
@@ -1305,6 +1344,338 @@ void RunEchoServer() {
   ss.parse_fn = MsgParseFn(EchoProtocol);
   server.SetSetting(ss);
   server.Run();
+}
+
+class FileResponse {
+ public:
+  enum class Stage { kSendingData = 0 };
+  enum class Status {
+    // everything works fine
+    kCode_200,
+    // bad request
+    kCode_400,
+    // not found
+    kCode_404
+  };
+  friend std::ostream& operator<<(std::ostream& os, Status s) {
+    if (s == Status::kCode_200) {
+      os << "200";
+    } else if (s == Status::kCode_400) {
+      os << "400";
+    } else if (s == Status::kCode_404) {
+      os << "404";
+    }
+    return os;
+  }
+
+  using FileContent = std::vector<char>;
+
+  void SetStatus(Status s) { status_ = s; }
+
+  size_t n_sent() { return n_sent_; }
+
+  void set_tot_len(int len) { tot_len_ = len; }
+
+  void set_payload_len(int len) {
+    payload_len_ = len;
+    payload_.resize(len);
+  }
+
+  void add_n_sent(int len) { n_sent_ += len; }
+
+  FileContent& payload() { return payload_; }
+
+  bool Good() { return status_ == Status::kCode_200; }
+
+  void ToMessage(Message& tx) {
+    // 当前实现是一次性发送文件内容
+    std::stringstream ss;
+    ss << status_;
+    ss << " " << payload_len_ << "\n";
+    std::string status_line(ss.str());
+    tx.Append(status_line.c_str(), status_line.size());
+    tx.Append(payload_.data(), payload_.size());
+  }
+
+ private:
+  Status status_{Status::kCode_200};
+  // 待发送文件的总长度
+  int tot_len_{};
+  // 已发送的数据长度
+  int n_sent_{};
+  // 该次发送的数据的长度
+  int payload_len_{};
+  FileContent payload_;
+};
+
+class FileRequest {
+ public:
+  enum class Stage {
+    // clang-format off
+    kRequestLineGetting = 0,
+    kRequestLineParsing,
+    kDataWaiting,
+    kDone,
+    kError = 100
+    // clang-format on
+  };
+  enum class FileOp {
+    // GET /path/to/file Range
+    //
+    // get content from a file,
+    // if third parameter does not exist, read whole file;
+    // otherwise, read specified range parts
+    kGet,
+    // DEL /path/to/file Mark
+    //
+    // delete file or mark deletion.
+    // if third parameter does not exit, delete file from disk in 7 days
+    // otherwise delete immediatly
+    kDelete,
+    // APP /path/to/file ContentLen
+    //.....
+    // append some content to file.
+    // if file does not exist, create it.
+    // third parameter specifies how much data write to the file.
+    // data comes from next line and after
+    kAppend
+  };
+
+  static constexpr int kRequestLineMaxLen = 1024;
+  static constexpr int kOffsetToEOF = -1;
+  static constexpr int kDefaultKeepDays = 7;
+
+  union FileOpParam {
+    struct {
+      size_t offset;
+      size_t len;
+    } for_get;
+
+    struct {
+      // 0 => delete immediatly
+      // other => keep file for that days
+      int keep_days;
+    } for_delete;
+
+    struct {
+      size_t len;
+    } for_append;
+  };
+
+  using FilePath = std::string;
+
+  FileRequest(FileResponse& resp) : resp_(resp) {}
+  FileRequest(const char* line, int len, FileResponse& resp) : resp_(resp) { ParseLine(line, len); }
+  bool ParseLine(const char* line, int len) {
+    std::string req;
+    req.assign(line, line + len);
+    std::vector<std::string> fields;
+    Split(req, " ", fields);
+    if (fields.size() < 2) {
+      set_stage(FileRequest::Stage::kError);
+      // could comment below line
+      resp_.SetStatus(FileResponse::Status::kCode_400);
+      return false;
+    }
+    auto op_str = fields[0];
+    path_ = fields[1];
+    if (op_str == "GET") {
+      // has the third field
+      if (fields.size() == 3) {
+        std::string range = fields[2];
+        fields.clear();
+        Split(range, "-", fields);
+        // allowd form: 100-1124, -, 100-
+        if (fields.size() == 2) {
+          int range_start = atoi(fields[0].c_str());
+          param_.for_get.offset = range_start;
+          if (fields[1].empty()) {
+            param_.for_get.len = kOffsetToEOF;
+          } else {
+            param_.for_get.len = atoi(fields[1].c_str()) - range_start;
+          }
+        } else {
+          // set default value
+          param_.for_get.offset = 0;
+          param_.for_get.len = kOffsetToEOF;
+        }
+      }
+      ReadFile();
+    } else if (op_str == "DEL") {
+      // has the third field
+      if (fields.size() == 3) {
+        param_.for_delete.keep_days = atoi(fields[2].c_str());
+      } else {
+        // set default value
+        param_.for_delete.keep_days = kDefaultKeepDays;
+      }
+      DeleteFile();
+    } else if (op_str == "APP") {
+      if (fields.size() != 3) {
+        set_stage(FileRequest::Stage::kError);
+        resp_.SetStatus(FileResponse::Status::kCode_400);
+        return false;
+      }
+      int len = atoi(fields[2].c_str());
+      if (len == 0) {
+        set_stage(FileRequest::Stage::kError);
+        resp_.SetStatus(FileResponse::Status::kCode_400);
+        return false;
+      }
+      param_.for_append.len = len;
+      AppendToFile();
+    } else {
+      // no such operation
+      set_stage(FileRequest::Stage::kError);
+      resp_.SetStatus(FileResponse::Status::kCode_400);
+      return false;
+    }
+    return true;
+  }
+
+  // TODO: First, send status and its partial content
+  // Then, send partial content until complete
+  void ReadFile() {
+    if (in_.is_open()) {
+      in_.close();
+    }
+    in_.open(path_);
+    if (!in_.good()) {
+      set_stage(FileRequest::Stage::kError);
+      resp_.SetStatus(FileResponse::Status::kCode_400);
+      return;
+    }
+    in_.seekg(0, std::ios::end);
+    size_t file_size = in_.tellg();
+    in_.seekg(0, std::ios::beg);
+
+    resp_.set_tot_len(file_size);
+    resp_.set_payload_len(file_size);
+    // expect whole file content in one read system call
+    // TODO:
+    in_.read(resp_.payload().data(), resp_.payload().size());
+
+    set_stage(FileRequest::Stage::kDone);
+    resp_.SetStatus(FileResponse::Status::kCode_200);
+  }
+
+  void DeleteFile() {
+    if (param_.for_delete.keep_days == 0) {
+      // delete immediatly
+      if (0 != remove(path_.c_str())) {
+        set_stage(FileRequest::Stage::kError);
+        resp_.SetStatus(FileResponse::Status::kCode_400);
+        return;
+      }
+    } else {
+      // do not delete the file until days passed
+    }
+    set_stage(FileRequest::Stage::kDone);
+    resp_.SetStatus(FileResponse::Status::kCode_200);
+  }
+
+  void AppendToFile() {
+    out_.open(path_, std::ios::app);
+    if (!out_.good()) {
+      set_stage(FileRequest::Stage::kError);
+      resp_.SetStatus(FileResponse::Status::kCode_400);
+      return;
+    }
+    // TODO:
+    set_stage(FileRequest::Stage::kDataWaiting);
+  }
+
+  void WriteToFile() { out_.open(path_); }
+
+  void OnData(const char* data, size_t len) {
+    if (n_recvd_ + len <= param_.for_append.len) {
+      out_.write(data, len);
+      n_recvd_ += len;
+      if (n_recvd_ == param_.for_append.len) {
+        set_stage(FileRequest::Stage::kDone);
+        resp_.SetStatus(FileResponse::Status::kCode_200);
+      }
+    } else {
+      set_stage(FileRequest::Stage::kError);
+      resp_.SetStatus(FileResponse::Status::kCode_400);
+    }
+  }
+
+  Stage stage() { return stage_; }
+  void set_stage(Stage s) { stage_ = s; }
+
+  bool RequestLineTooLong(int n) {
+    return stage() == FileRequest::Stage::kRequestLineGetting && n > FileRequest::kRequestLineMaxLen;
+  }
+
+ private:
+  FileOp op_;
+  FilePath path_;
+  FileOpParam param_;
+  Stage stage_{Stage::kRequestLineGetting};
+  std::ofstream out_;
+  std::ifstream in_;
+  FileResponse& resp_;
+  size_t n_recvd_{};
+};
+
+class FileService {
+ public:
+  FileService() {}
+
+  bool Run() {
+    ss_.port = 8000;
+    MsgParseFn fn = std::bind(&FileService::OnMessage, this, std::placeholders::_1, std::placeholders::_2);
+    ss_.parse_fn = fn;
+    server_.SetSetting(ss_);
+    return server_.Run();
+  }
+
+  void OnMessage(Message& msg_rx, Message& msg_tx) {
+    if (req_ == nullptr && resp_ == nullptr) {
+      resp_ = new FileResponse{};
+      req_ = new FileRequest(*resp_);
+    }
+    if (req_->stage() == FileRequest::Stage::kRequestLineGetting) {
+      for (size_t i = msg_rx.n_read(); i < msg_rx.in_use(); i++) {
+        if (req_->RequestLineTooLong(i)) {
+          req_->set_stage(FileRequest::Stage::kError);
+          resp_->SetStatus(FileResponse::Status::kCode_400);
+          break;
+        }
+        if (msg_rx.recvd()[i] == '\n') {
+          req_->set_stage(FileRequest::Stage::kRequestLineParsing);
+          msg_rx.add_n_read(i - msg_rx.n_read() + 1);
+          break;
+        }
+      }
+    }
+    if (req_->stage() == FileRequest::Stage::kRequestLineParsing) {
+      size_t line_len = msg_rx.n_read();
+      req_->ParseLine(msg_rx.recvd(), line_len);
+    }
+    if (req_->stage() == FileRequest::Stage::kDataWaiting) {
+      req_->OnData(msg_rx.recvd(), msg_rx.in_use());
+      msg_rx.drain();
+    }
+    if (req_->stage() == FileRequest::Stage::kDone || req_->stage() == FileRequest::Stage::kError) {
+      resp_->ToMessage(msg_tx);
+      delete req_;
+      req_ = nullptr;
+      delete resp_;
+      resp_ = nullptr;
+    }
+  }
+
+ private:
+  FileResponse* resp_{};
+  FileRequest* req_{};
+  TcpServer server_;
+  TcpServerSetting ss_;
+};
+
+void RunFileServer() {
+  FileService().Run();
 }
 
 int main() {
@@ -1330,7 +1701,7 @@ int main() {
   //   std::cout << "Ooops...." << std::endl;
   // }
 
-  RunEchoServer();
+  RunFileServer();
 
   // Test_B64Decode();
   // Test_Split();
